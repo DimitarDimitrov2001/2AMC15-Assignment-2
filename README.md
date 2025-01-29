@@ -1,4 +1,3 @@
-# DIC-2AMC15-2025
 
 Welcome to Data Intelligence Challenge-2AMC15!
 This is the repository containing the challenge environment code.
