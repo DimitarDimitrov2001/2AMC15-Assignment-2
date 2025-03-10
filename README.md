@@ -5,7 +5,7 @@ This is the repository containing the challenge environment code.
 ## Quickstart
 
 1. Create a virtual environment for this course with Python >= 3.10. Using conda, you can do: `conda create -n dic2025 python=3.11`. Use `conda activate dic2025` to activate it `conda deactivate` to deactivate it.
-2. Clone this repository into the local directory you prefer `git clone https://github.com/dianaonutu/DIC-2AMC15-2025.git`.
+2. Clone this repository into the local directory you prefer `git clone https://github.com/DataIntelligenceChallenge/DIC-2AMC15-2025.git`.
 3. Install the required packages `pip install -r requirements.txt`. Now, you are ready to use the simulation environment! :partying_face:	
 4. Run `$ python train.py grid_configs/example_grid.npy` to start training!
 
