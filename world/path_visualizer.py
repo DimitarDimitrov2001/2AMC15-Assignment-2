@@ -10,26 +10,7 @@ from PIL import Image
 from PIL import ImageDraw
 import numpy as np
 
-# World may not be importable, depending on how you have set up your
-# conda/pip/venv environment. Here we try to fix that by forcing the world to
-# be in your python path. If it still doesn't work, come to a tutorial, look up
-# how to fix module import errors, or ask ChatGPT.
-try:
-    from world import GUI
-except ModuleNotFoundError:
-    from os import path
-    from os import pardir
-    import sys
-
-    root_path = path.abspath(path.join(
-        path.join(path.abspath(__file__), pardir), pardir)
-    )
-
-    if root_path not in sys.path:
-        sys.path.append(root_path)
-
-    from world import GUI
-
+from world import GUI
 
 def draw_base_image(cells: np.ndarray,
                     scalar: int,
@@ -65,7 +46,7 @@ def draw_base_image(cells: np.ndarray,
 
 def draw_starting_square(starting_square: tuple[int, int],
                          grid_scalar: int,
-                         image_size: tuple[int, int]):
+                         image_size: tuple[int, int]) -> Image.Image:
     """Draws the starting square as a yellow square."""
     square_image = Image.new(mode="RGBA", size=image_size,
                              color=(255, 255, 255, 0))
@@ -188,8 +169,9 @@ def float_rgb_to_int(rgb: tuple[float, float, float]) -> tuple[int, int, int]:
 
 
 def visualize_path(grid_cells: np.ndarray,
-                   agent_path: list[list[tuple[int, int]]]) \
-        -> list[Image.Image]:
+                   agent_path: list[list[tuple[int, int]]],
+                   show_frequency: bool = False) \
+        -> Image.Image:
     """Visualizes the path of (multiple) agents through the environment.
 
     Args:
@@ -198,26 +180,22 @@ def visualize_path(grid_cells: np.ndarray,
             the agent's path.
 
     Returns:
-        A list of images showing the grid and the frequency of the agent
+        An image showing the grid and the frequency of the agent
         traversing each position on the grid.
     """
     grid_size = grid_cells.shape
     scalar = 30
-    image_size = tuple((g * scalar) + 2 for g in grid_size)
     freq_scalar = 20
+    image_size = tuple((g * scalar) + 2 for g in grid_size)
 
     base_image = draw_base_image(grid_cells, scalar, image_size)
-
-    starting_square_img = draw_starting_square(agent_path[0],
-                                                scalar,
-                                                image_size)
-    # img = Image.alpha_composite(base_image, starting_square_img)
-    # freq_image = draw_freq_image(agent_path, grid_size, scalar, freq_scalar,
-                                # image_size)
+    starting_square_img = draw_starting_square(agent_path[0], scalar, image_size)
     img = Image.alpha_composite(base_image, starting_square_img)
-    path_image = draw_path(agent_path, scalar, 2,
-                            float_rgb_to_int(glasbey_hv[0]),
-                            image_size)
-    img = Image.alpha_composite(img, path_image)
 
-    return img
+    if show_frequency:
+        overlay = draw_freq_image(agent_path, grid_size, scalar, freq_scalar, image_size)
+    else:
+        overlay = draw_path(agent_path, scalar, 2,
+                            float_rgb_to_int(glasbey_hv[0]), image_size)
+
+    return Image.alpha_composite(img, overlay)
