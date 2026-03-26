@@ -3,7 +3,7 @@
 Provides a GUI for the environment using pygame.
 """
 import sys
-from time import perf_counter, sleep
+from time import perf_counter
 
 import numpy as np
 import pygame
@@ -21,7 +21,7 @@ class GUI:
     INFO_NAME_MAP = [
         ("cumulative_reward", "Cumulative reward:"),
         ("total_steps", "Total steps:"),
-        ("total_failed_move", "Total failed moves:"),
+        ("total_failed_moves", "Total failed moves:"),
         # ("total_targets_reached", "Total targets reached:"),
         ("fps", "FPS:"),
     ]
@@ -78,7 +78,7 @@ class GUI:
     @staticmethod
     def _reset_stats():
         return {"total_targets_reached": 0,
-                "total_failed_move": 0,
+                "total_failed_moves": 0,
                 "fps": "0.0",
                 "total_steps": 0,
                 "cumulative_reward": 0}
@@ -140,11 +140,11 @@ class GUI:
         surface.blit(text, textpos)
 
     def _draw_agent(self, surface: pygame.Surface,
-                    agent_pos: list[tuple[int, int]],
+                    agent_pos: tuple[int, int],
                     x_offset: int, y_offset: int):
         """Draws the agent on the grid world."""
 
-        # Draw the agent as a gray circle
+        # Draw the agent as a dark blue circle
         x = (agent_pos[0] * self.scalar) + x_offset
         y = (agent_pos[1] * self.scalar) + y_offset
         r = int(self.scalar / 2) - 8
@@ -214,7 +214,7 @@ class GUI:
 
         Args:
             grid_cells: The grid cells contained in the Grid class.
-            agent_pos: List of current agent positions
+            agent_pos: Current position of the agent
             info: `info` dict held by the Environment class.
             is_single_step: Whether this render is caused by a click of the
                 `step` button.
@@ -234,7 +234,7 @@ class GUI:
             self.stats["total_steps"] += 1
 
         failed_move = 1 - int(info["agent_moved"])
-        self.stats["total_failed_move"] += failed_move
+        self.stats["total_failed_moves"] += failed_move
 
         self.stats["cumulative_reward"] += reward
 
