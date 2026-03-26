@@ -8,6 +8,15 @@ from pathlib import Path
 
 
 class Grid:
+
+    CELL_TYPES = {
+            "empty": 0,
+            "boundary": 1,
+            "obstacle": 2,
+            "target": 3,
+            "charger": 4
+        }
+
     def __init__(self, n_cols: int, n_rows: int):
         """Grid representation of the world 
            as a 2D numpy integer array.
@@ -32,42 +41,35 @@ class Grid:
         self.n_rows = self.cells.shape[1]
         self.n_cols = self.cells.shape[0]
 
-        self.objects = {
-            "empty": 0,
-            "boundary": 1,
-            "obstacle": 2,
-            "target": 3,
-            "charger": 4
-        }
 
-    def place_object(self, x, y, type):
+    def place_object(self, x, y, object_type):
         """Places an object on the grid.
 
         Args:
             x: x-coordinate of the object.
             y: y-coordinate of the object.
-            type: Type of the object.
+            object_type: Type of the object.
         """
-        self.cells[x][y] = self.objects[type]
+        self.cells[x][y] = self.CELL_TYPES[object_type]
 
     @staticmethod
-    def load_grid(fp: Path) -> Grid:
+    def load_grid(grid_file_path: Path) -> Grid:
         """Loads a numpy array from file path.
 
         Returns:
             A Grid object from the file.
         """
-        arr = np.load(fp)
-        g = Grid(arr.shape[0], arr.shape[1])
-        g.cells = arr
+        grid_array = np.load(grid_file_path)
+        grid = Grid(grid_array.shape[0], grid_array.shape[1])
+        grid.cells = grid_array
 
-        return g
+        return grid
 
-    def save_grid_file(self, fp: Path):
+    def save_grid_file(self, grid_file_path: Path):
         """Saves the numpy array representation of 
         the grid to file path.
 
         Args:
-            fp: File path where the grid file is to be saved.
+            grid_file_path: File path where the grid file is to be saved.
         """
-        np.save(fp.with_suffix(".npy"), self.cells)
+        np.save(grid_file_path.with_suffix(".npy"), self.cells)
