@@ -1,16 +1,19 @@
 from pathlib import Path
 from warnings import warn
+from PIL import Image
 
-def action_to_direction(action):
-    directions = {
-        0: (0, 1),   # Down
-        1: (0, -1),  # Up
-        2: (-1, 0),  # Left
-        3: (1, 0),   # Right
-    }
-    return directions[action]
 
-def save_results(file_name, world_stats, path_image, show_images):
+ACTIONS_TO_DIRECTIONS = {
+    0: (0, 1),   # Down
+    1: (0, -1),  # Up
+    2: (-1, 0),  # Left
+    3: (1, 0),   # Right
+}
+
+def action_to_direction(action: int) -> tuple[int, int]:
+    return ACTIONS_TO_DIRECTIONS[action]
+
+def save_results(file_name: str, world_stats: dict, path_image: Image.Image, show_images: bool) -> None:
     out_dir = Path("results/")
     if not out_dir.exists():
         warn("Evaluation output directory does not exist. Creating the "
@@ -25,9 +28,9 @@ def save_results(file_name, world_stats, path_image, show_images):
         for key, value in world_stats.items():
             f.write(f"{key}: {value}\n")
             print(f"{key}: {value}")
-    
+
     # Image file
     out_fp = out_dir / f"{file_name}.png"
     path_image.save(out_fp)
     if show_images:
-        path_image.show(f"Path Frequency")
+        path_image.show("Path Frequency")
