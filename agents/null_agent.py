@@ -2,8 +2,6 @@
 
 An agent which does nothing.
 """
-import numpy as np
-
 from agents import BaseAgent
 
 

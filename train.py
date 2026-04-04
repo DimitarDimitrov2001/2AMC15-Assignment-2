@@ -6,20 +6,8 @@ from argparse import ArgumentParser
 from pathlib import Path
 from tqdm import trange
 
-try:
-    from world import Environment
-    from agents.random_agent import RandomAgent
-except ModuleNotFoundError:
-    from os import path
-    from os import pardir
-    import sys
-    root_path = path.abspath(path.join(
-        path.join(path.abspath(__file__), pardir), pardir)
-    )
-    if root_path not in sys.path:
-        sys.path.extend(root_path)
-    from world import Environment
-    from agents.random_agent import RandomAgent
+from world import Environment
+from agents.random_agent import RandomAgent
 
 def parse_args():
     p = ArgumentParser(description="DIC Reinforcement Learning Trainer.")

@@ -2,36 +2,18 @@
 Environment.
 """
 import random
-import datetime
 import numpy as np
 from tqdm import trange
 from pathlib import Path
 from warnings import warn
 from time import time, sleep
 from datetime import datetime
+
+from agents import BaseAgent
 from world.helpers import save_results, action_to_direction
-
-try:
-    from agents import BaseAgent
-    from world.grid import Grid
-    from world.gui import GUI
-    from world.path_visualizer import visualize_path
-except ModuleNotFoundError:
-    from os import path
-    from os import pardir
-    import sys
-
-    root_path = path.abspath(path.join(
-        path.join(path.abspath(__file__), pardir), pardir)
-    )
-
-    if root_path not in sys.path:
-        sys.path.append(root_path)
-
-    from agents import BaseAgent
-    from world.grid import Grid
-    from world.gui import GUI
-    from world.path_visualizer import visualize_path
+from world.grid import Grid
+from world.gui import GUI
+from world.path_visualizer import visualize_path
 
 class Environment:
     def __init__(self,
@@ -132,8 +114,8 @@ class Environment:
                 self.agent_pos = pos
             else:
                 raise ValueError(
-                    "Attempted to place agent on top of obstacle, delivery"
-                    "location or charger")
+                    "Attempted to place agent on top of obstacle or delivery"
+                    " location")
         else:
             # No positions were given. We place agents randomly.
             warn("No initial agent positions given. Randomly placing agents "
@@ -167,6 +149,8 @@ class Environment:
                     self.no_gui = v
                 case "target_fps":
                     self.target_spf = 1. / v
+                case "sigma" | "reward_fn" | "random_seed":
+                    raise ValueError(f"{k} cannot be changed after initialization.")
                 case _:
                     raise ValueError(f"{k} is not one of the possible "
                                      f"keyword arguments.")
@@ -310,8 +294,7 @@ class Environment:
                 pass
             case 3:  # Moved to a target tile
                 reward = 10
-                # "Illegal move"
-            case _:
+            case _: # "Illegal move"
                 raise ValueError(f"Grid cell should not have value: {grid[agent_pos]}.",
                                  f"at position {agent_pos}")
         return reward
