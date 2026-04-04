@@ -3,7 +3,6 @@
 This is an agent that takes a random action from the available action space.
 """
 from random import randint
-import numpy as np
 
 from agents import BaseAgent
 
