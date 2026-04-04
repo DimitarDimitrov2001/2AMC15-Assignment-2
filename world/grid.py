@@ -13,8 +13,7 @@ class Grid:
             "empty": 0,
             "boundary": 1,
             "obstacle": 2,
-            "target": 3,
-            "charger": 4
+            "target": 3
         }
 
     def __init__(self, n_cols: int, n_rows: int):
@@ -25,8 +24,7 @@ class Grid:
         - Empty: 0,
         - Boundary: 1,
         - Obstacle: 2,
-        - Dirt: 3,
-        - Charger: 4
+        - Dirt: 3
 
         Args:
             n_cols: Number of grid columns.

@@ -16,7 +16,6 @@ class GUI:
         (57, 57, 57),     # Boundary cell
         (57, 57, 57),     # Obstacle cell
         (34, 139, 34),    # Dirt cell
-        (255, 119, 0),    # Charger cell
     ]
     INFO_NAME_MAP = [
         ("cumulative_reward", "Cumulative reward:"),

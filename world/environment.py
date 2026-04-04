@@ -114,8 +114,8 @@ class Environment:
                 self.agent_pos = pos
             else:
                 raise ValueError(
-                    "Attempted to place agent on top of obstacle, delivery"
-                    "location or charger")
+                    "Attempted to place agent on top of obstacle or delivery"
+                    " location")
         else:
             # No positions were given. We place agents randomly.
             warn("No initial agent positions given. Randomly placing agents "
