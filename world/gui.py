@@ -280,6 +280,83 @@ class GUI:
                     self.step = True
         pygame.event.pump()
 
+    def select_start_position(self, grid_cells: np.ndarray) -> tuple[int, int]:
+        """Shows the grid and waits for the user to click an empty cell
+        to place the agent start position.
+
+        Args:
+            grid_cells: The grid cells to display.
+
+        Returns:
+            (col, row) tuple of the selected start position.
+        """
+        grid_width = self.scalar * grid_cells.shape[0]
+        grid_height = self.scalar * grid_cells.shape[1]
+        x_offset = (self.grid_panel_size[0] / 2) - (grid_width / 2)
+        y_offset = (self.grid_panel_size[1] / 2) - (grid_height / 2)
+
+        selected = None
+        hover_cell = None
+
+        while selected is None:
+            background = pygame.Surface(self.window.get_size()).convert()
+            background.fill((250, 250, 250))
+            background.fill((238, 241, 240), self.info_panel_rect)
+
+            self._draw_grid(background, grid_cells, x_offset, y_offset)
+
+            # Draw hover highlight on empty cells
+            if hover_cell is not None:
+                hc, hr = hover_cell
+                if (0 <= hc < grid_cells.shape[0]
+                        and 0 <= hr < grid_cells.shape[1]
+                        and grid_cells[hc, hr] == 0):
+                    hx = (hc * self.scalar) + x_offset
+                    hy = (hr * self.scalar) + y_offset
+                    hover_rect = pygame.Rect(hx, hy, self.scalar, self.scalar)
+                    hover_surface = pygame.Surface(
+                        (self.scalar, self.scalar), pygame.SRCALPHA)
+                    hover_surface.fill((0, 0, 102, 80))
+                    background.blit(hover_surface, hover_rect)
+
+            # Draw instruction text in the info panel
+            font = pygame.font.Font(None, 24)
+            text = font.render("Click an empty cell", True, (0, 0, 0))
+            textpos = text.get_rect()
+            textpos.x = self.grid_panel_size[0] + 20
+            textpos.y = 50
+            background.blit(text, textpos)
+
+            text2 = font.render("to place the agent.", True, (0, 0, 0))
+            textpos2 = text2.get_rect()
+            textpos2.x = self.grid_panel_size[0] + 20
+            textpos2.y = 80
+            background.blit(text2, textpos2)
+
+            update_rect = self.window.blit(background, background.get_rect())
+            pygame.display.update(update_rect)
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    sys.exit()
+                elif event.type == pygame.MOUSEMOTION:
+                    mx, my = event.pos
+                    col = int((mx - x_offset) / self.scalar)
+                    row = int((my - y_offset) / self.scalar)
+                    hover_cell = (col, row)
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    mx, my = event.pos
+                    col = int((mx - x_offset) / self.scalar)
+                    row = int((my - y_offset) / self.scalar)
+                    if (0 <= col < grid_cells.shape[0]
+                            and 0 <= row < grid_cells.shape[1]
+                            and grid_cells[col, row] == 0):
+                        selected = (col, row)
+
+            pygame.event.pump()
+
+        return selected
+
     @staticmethod
     def close():
         """Closes the UI."""
