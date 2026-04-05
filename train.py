@@ -25,24 +25,30 @@ def parse_args():
                    help="Number of iterations to go through.")
     p.add_argument("--random_seed", type=int, default=0,
                    help="Random seed value for the environment.")
+    p.add_argument("--start_pos", type=str, default=None,
+                   help="Agent start position as col,row (e.g. 2,3). "
+                        "If not set, the GUI lets you click to place it. "
+                        "In no_gui mode, defaults to random placement.")
     return p.parse_args()
 
 
 def main(grid_paths: list[Path], no_gui: bool, iters: int, fps: int,
-         sigma: float, random_seed: int):
+         sigma: float, random_seed: int, start_pos: tuple[int, int] | None):
     """Main loop of the program."""
 
     for grid in grid_paths:
         
         # Set up the environment
-        env = Environment(grid, no_gui,sigma=sigma, target_fps=fps, 
+        env = Environment(grid, no_gui, sigma=sigma, target_fps=fps,
+                          agent_start_pos=start_pos,
                           random_seed=random_seed)
         
         # Initialize agent
         agent = RandomAgent()
         
         # Always reset the environment to initial state
-        state = env.reset()
+        initial_pos = env.reset()
+        state = initial_pos
         for _ in trange(iters):
             
             # Agent takes an action based on the latest observation and info.
@@ -58,9 +64,16 @@ def main(grid_paths: list[Path], no_gui: bool, iters: int, fps: int,
             agent.update(state, reward, info["actual_action"])
 
         # Evaluate the agent
-        Environment.evaluate_agent(grid, agent, iters, sigma, random_seed=random_seed)
+        Environment.evaluate_agent(grid, agent, iters, sigma,
+                                   agent_start_pos=initial_pos,
+                                   random_seed=random_seed)
 
 
 if __name__ == '__main__':
     args = parse_args()
-    main(args.GRID, args.no_gui, args.iter, args.fps, args.sigma, args.random_seed)
+    start_pos = None
+    if args.start_pos is not None:
+        parts = args.start_pos.split(',')
+        start_pos = (int(parts[0]), int(parts[1]))
+    main(args.GRID, args.no_gui, args.iter, args.fps, args.sigma,
+         args.random_seed, start_pos)

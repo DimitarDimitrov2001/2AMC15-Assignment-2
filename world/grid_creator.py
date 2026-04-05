@@ -42,7 +42,8 @@ def draw_grid(grid):
     materials = {0: 'cell_empty',
                  1: 'cell_boundary',
                  2: 'cell_obstacle',
-                 3: 'cell_target',}
+                 3: 'cell_target',
+                 4: 'cell_start',}
     
     return {'grid': render_template(
         'grid.html',
@@ -70,6 +71,7 @@ def build_grid():
         width: number of columns in the grid.
         obstacles: a list of tuples (x,y) of obstacle locations.
         targets: a list of tuples (x,y) of target locations.
+        start: a single tuple (x,y) for the agent start position.
         walls: a list of tuples (x,y) of wall locations.
         save: boolean (true, false) to save the current grid to a file.
         name: filename to save the current grid to.
@@ -80,6 +82,7 @@ def build_grid():
     n_cols = int(request.args.get('width'))
     obstacles = ast.literal_eval(request.args.get('obstacles'))
     targets = ast.literal_eval(request.args.get('targets'))
+    start = request.args.get('start', '')
     to_save = False if request.args.get('save') == 'false' else True
     name = str(request.args.get('name'))
 
@@ -89,6 +92,9 @@ def build_grid():
         grid.place_object(x, y, "obstacle")
     for (x, y) in targets:
         grid.place_object(x, y, "target")
+    if start:
+        (x, y) = ast.literal_eval(start)
+        grid.place_object(x, y, "start")
     
     drawn_grid = draw_grid(grid)
 

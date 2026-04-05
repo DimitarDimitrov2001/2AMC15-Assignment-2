@@ -102,28 +102,91 @@ class Environment:
                 "total_targets_reached": 0,
                 }
 
+    @staticmethod
+    def _format_grid(grid, agent_pos=None) -> str:
+        """Returns a text representation of the grid with axis labels.
+
+        Args:
+            grid: The grid cells array.
+            agent_pos: Optional agent position to mark on the grid.
+        """
+        symbols = {0: ".", 1: "#", 2: "X", 3: "T", 4: "S"}
+        rows, cols = grid.shape
+
+        # Column header
+        col_width = max(len(str(cols - 1)), 2)
+        header = " " * (len(str(rows - 1)) + 1)
+        header += "".join(str(c).rjust(col_width) for c in range(cols))
+        lines = [header]
+
+        for r in range(rows):
+            row_label = str(r).rjust(len(str(rows - 1)))
+            cells = []
+            for c in range(cols):
+                if agent_pos is not None and (r, c) == agent_pos:
+                    cells.append("A".rjust(col_width))
+                else:
+                    cells.append(symbols.get(grid[r, c], "?").rjust(col_width))
+            lines.append(f"{row_label} {''.join(cells)}")
+
+        legend = "Legend: . = empty, # = wall, X = obstacle, T = target"
+        if agent_pos is not None:
+            legend += ", A = agent"
+        lines.append(legend)
+
+        return "\n".join(lines)
+
+    def _validate_start_pos(self, pos: tuple[int, int]):
+        """Validates that the given position is a legal start position.
+
+        Raises:
+            ValueError: If the position is out of bounds or occupied.
+        """
+        rows, cols = self.grid.shape
+        if not (0 <= pos[0] < rows and 0 <= pos[1] < cols):
+            print(self._format_grid(self.grid))
+            raise ValueError(
+                f"Start position {pos} is out of bounds. "
+                f"Grid size is {rows}x{cols}.")
+
+        cell_names = {0: "empty", 1: "boundary wall", 2: "obstacle", 3: "target"}
+        cell_value = self.grid[pos]
+        if cell_value != 0:
+            print(self._format_grid(self.grid))
+            raise ValueError(
+                f"Start position {pos} is a {cell_names.get(cell_value, 'unknown')} "
+                f"cell (value={cell_value}). The agent can only start on an "
+                f"empty cell.")
+
     def _initialize_agent_pos(self):
         """Initializes agent position from the given location or
         randomly chooses one if None was given.
+
+        If a GUI is active and no position is provided, the user
+        can click on the grid to place the agent.
         """
+
+        start_cells = np.where(self.grid == 4)
+        if len(start_cells[0]) > 0:
+            self.grid[start_cells] = 0
 
         if self.agent_start_pos is not None:
             pos = (self.agent_start_pos[0], self.agent_start_pos[1])
-            if self.grid[pos] == 0:
-                # Cell is empty. We can place the agent there.
-                self.agent_pos = pos
-            else:
-                raise ValueError(
-                    "Attempted to place agent on top of obstacle or delivery"
-                    " location")
+            self._validate_start_pos(pos)
+            self.agent_pos = pos
+        elif len(start_cells[0]) > 0:
+            self.agent_pos = (start_cells[0][0], start_cells[1][0])
+        elif self.gui is not None:
+            self.agent_pos = self.gui.select_start_position(self.grid)
         else:
-            # No positions were given. We place agents randomly.
-            warn("No initial agent positions given. Randomly placing agents "
-                 "on the grid.")
-            # Find all empty locations and choose one at random
             zeros = np.where(self.grid == 0)
             idx = random.randint(0, len(zeros[0]) - 1)
             self.agent_pos = (zeros[0][idx], zeros[1][idx])
+            print(self._format_grid(self.grid, self.agent_pos))
+            print(f"\nNo start position provided. "
+                  f"Randomly placed agent at {self.agent_pos}.")
+            print(f"To use this position next run: "
+                  f"--start_pos {self.agent_pos[0]},{self.agent_pos[1]}")
 
 
     def reset(self, **kwargs) -> tuple[int, int]:
@@ -157,18 +220,20 @@ class Environment:
         
         # Reset variables
         self.grid = Grid.load_grid(self.grid_fp).cells
-        self._initialize_agent_pos()
         self.terminal_state = False
         self.info = self._reset_info()
         self.world_stats = self._reset_world_stats()
 
-        # GUI specific code
+        # GUI specific code: create before agent placement
+        # so the user can click to place the start position.
         if not self.no_gui:
             self.gui = GUI(self.grid.shape)
             self.gui.reset()
         else:
             if self.gui is not None:
                 self.gui.close()
+
+        self._initialize_agent_pos()
 
         return self.agent_pos
 

@@ -54,6 +54,16 @@
     background: forestgreen;
 }
 
+.cell_start {
+    justify-content: center;
+    align-items: center;
+    display: flex;
+    font-family: Arial, serif;
+    font-size: 10px;
+    font-weight: bold;
+    background: #f2d352;
+}
+
 .cell_selected {
     justify-content: center;
     align-items: center;
