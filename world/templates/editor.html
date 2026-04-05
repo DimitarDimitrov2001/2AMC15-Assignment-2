@@ -15,6 +15,7 @@
 <select name="draw" id="draw">
     <option value="obstacle">obstacle</option>
     <option value="target">target</option>
+    <option value="start">start</option>
     
 </select>
 <label for="grid_name">Grid name</label>
@@ -36,6 +37,8 @@
         }
         let height = document.getElementById('height').value;
         let width = document.getElementById('width').value;
+        let start_el = document.getElementsByClassName("cell_start")[0];
+        let start_coord = start_el ? start_el.id : '';
         $.ajax({
             url: '/build_grid',
             type: 'GET',
@@ -44,6 +47,7 @@
                 width: width,
                 obstacles: '[' + ob_coords.join(',') + ']',
                 targets: '[' + t_coords.join(',') + ']',
+                start: start_coord,
                 save: save,
                 name: name
             },
@@ -60,7 +64,8 @@
         let tile = document.getElementById("(" + x + "," + y + ")");
         let type = document.getElementById('draw').value;
         if ((tile.className === 'cell_obstacle')
-            || (tile.className === 'cell_target')) {
+            || (tile.className === 'cell_target')
+            || (tile.className === 'cell_start')) {
             // If there's already something on the tile AND it was one of the placeable tile types, make it empty again.
             tile.className = 'cell_empty';
         } else if (tile.className === 'cell_empty') {
@@ -69,6 +74,10 @@
                 tile.className = 'cell_obstacle'
             } else if (type === 'target') {
                 tile.className = 'cell_target'
+            } else if (type === 'start') {
+                let existing = document.getElementsByClassName("cell_start")[0];
+                if (existing) existing.className = 'cell_empty';
+                tile.className = 'cell_start'
             } 
         }
     }

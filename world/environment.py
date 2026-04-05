@@ -107,6 +107,10 @@ class Environment:
         randomly chooses one if None was given.
         """
 
+        start_cells = np.where(self.grid == 4)
+        if len(start_cells[0]) > 0:
+            self.grid[start_cells] = 0
+
         if self.agent_start_pos is not None:
             pos = (self.agent_start_pos[0], self.agent_start_pos[1])
             if self.grid[pos] == 0:
@@ -116,6 +120,8 @@ class Environment:
                 raise ValueError(
                     "Attempted to place agent on top of obstacle or delivery"
                     " location")
+        elif len(start_cells[0]) > 0:
+            self.agent_pos = (start_cells[0][0], start_cells[1][0])
         else:
             # No positions were given. We place agents randomly.
             warn("No initial agent positions given. Randomly placing agents "
