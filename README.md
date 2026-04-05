@@ -5,7 +5,7 @@ This is the repository containing the challenge environment code.
 ## Quickstart
 
 1. Create a virtual environment for this course with Python >= 3.10. Using conda, you can do: `conda create -n dic2025 python=3.11`. Use `conda activate dic2025` to activate it `conda deactivate` to deactivate it.
-2. Clone this repository into the local directory you prefer `git clone https://github.com/DataIntelligenceChallenge/2AMC15-2025.git`.
+2. Clone this repository into the local directory you prefer `git clone https://github.com/DataIntelligenceChallenge/2AMC15-2026.git`.
 3. Install the required packages `pip install -r requirements.txt`. Now, you are ready to use the simulation environment! :partying_face:	
 4. Run `$ python train.py grid_configs/example_grid.npy` to start training!
 
@@ -13,7 +13,7 @@ This is the repository containing the challenge environment code.
 
 ```bash
 usage: train.py [-h] [--no_gui] [--sigma SIGMA] [--fps FPS] [--iter ITER]
-                [--random_seed RANDOM_SEED] 
+                [--random_seed RANDOM_SEED] [--start_pos START_POS]
                 GRID [GRID ...]
 
 DIC Reinforcement Learning Trainer.
@@ -28,6 +28,7 @@ options:
   --fps FPS                  Frames per second to render at. Only used if no_gui is not set. (int, default=30)
   --iter ITER                Number of iterations to go through. Should be integer. (int, default=1000)
   --random_seed RANDOM_SEED  Random seed value for the environment. (int, default=0)
+  --start_pos START_POS      Agent start position as col,row (e.g. 2,3). If not set, the GUI lets you click to place it. In no_gui mode, defaults to random placement.
 ```
 
 ## Code guide
