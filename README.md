@@ -1,109 +1,105 @@
+# RL in Practice - Group 5
 
-Welcome to Data Intelligence Challenge-2AMC15!
-This is the repository containing the challenge environment code.
+This repository contains the reinforcement learning challenge environment and example training entry point for Group 5.
 
-## Quickstart
+## Requirements
 
-1. Create a virtual environment for this course with Python >= 3.10. Using conda, you can do: `conda create -n dic2025 python=3.11`. Use `conda activate dic2025` to activate it `conda deactivate` to deactivate it.
-2. Clone this repository into the local directory you prefer `git clone https://github.com/RL-In-Practice/2AMC15-2026.git`.
-3. Install the required packages `pip install -r requirements.txt`. Now, you are ready to use the simulation environment! :partying_face:	
-4. Run `$ python train.py grid_configs/example_grid.npy` to start training!
+- Python 3.12 or newer
+- [`uv`](https://docs.astral.sh/uv/) for dependency and virtual environment management
 
-`train.py` is just an example training script. Inside this file, initialize the agent you want to train and evaluate. Feel free to modify it as necessary. Its usage is:
+## Installation
 
-```bash
-usage: train.py [-h] [--no_gui] [--sigma SIGMA] [--fps FPS] [--iter ITER]
-                [--random_seed RANDOM_SEED] [--start_pos START_POS]
-                GRID [GRID ...]
-
-DIC Reinforcement Learning Trainer.
-
-positional arguments:
-  GRID                  Paths to the grid file to use. There can be more than
-                        one.
-options:
-  -h, --help                 show this help message and exit
-  --no_gui                   Disables rendering to train faster (boolean)
-  --sigma SIGMA              Sigma value for the stochasticity of the environment. (float, default=0.1, should be in [0, 1])
-  --fps FPS                  Frames per second to render at. Only used if no_gui is not set. (int, default=30)
-  --iter ITER                Number of iterations to go through. Should be integer. (int, default=1000)
-  --random_seed RANDOM_SEED  Random seed value for the environment. (int, default=0)
-  --start_pos START_POS      Agent start position as col,row (e.g. 2,3). If not set, the GUI lets you click to place it. In no_gui mode, defaults to random placement.
-```
-
-## Code guide
-
-The code is made up of 2 modules: 
-
-1. `agent`
-2. `world`
-
-### The `agent` module
-
-The `agent` module contains the `BaseAgent` class as well as some benchmark agents you may want to test against.
-
-The `BaseAgent` is an abstract class and all RL agents for DIC must inherit from/implement it.
-If you know/understand class inheritence, skip the following section:
-
-#### `BaseAgent` as an abstract class
-Here you can find an explanation about abstract classes [Geeks for Geeks](https://www.geeksforgeeks.org/abstract-classes-in-python/).
-
-Think of this like how all models in PyTorch start like 
-
-```python
-class NewModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-    ...
-```
-
-In this case, `NewModel` inherits from `nn.Module`, which gives it the ability to do back propagation, store parameters, etc. without you having to manually code that every time.
-It also ensures that every class that inherits from `nn.Module` contains _at least_ the `forward()` method, which allows a forward pass to actually happen.
-
-In the case of your RL agent, inheriting from `BaseAgent` guarantees that your agent implements `update()` and `take_action()`.
-This ensures that no matter what RL agent you make and however you code it, the environment and training code can always interact with it in the same way.
-Check out the benchmark agents to see examples.
-
-### The `world` module
-
-The world module contains:
-1. `grid_creator.py`
-2. `environment.py`
-3. `grid.py`
-4. `gui.py`
-
-#### Grid creator
-Run this file to create new grids.
+Clone the repository and install the project dependencies:
 
 ```bash
-$ python grid_creator.py
+git clone git@github.com:szelesteya/rl-in-practice-group-5.git
+cd rl-in-practice-group-5
+uv sync
 ```
 
-This will start up a web server where you create new grids, of different sizes with various elements arrangements.
-To view the grid creator itself, go to `127.0.0.1:5000`.
-All levels will be saved to the `grid_configs/` directory.
+## Usage
 
+Run the example training script with one or more grid files:
 
-#### The Environment
+```bash
+uv run python train.py grid_configs/solvable.npy
+```
 
-The `Environment` is very important because it contains everything we hold dear, including ourselves [^1].
-It is also the name of the class which our RL agent will act within. Most of the action happens in there.
+Useful options:
 
-The main interaction with `Environment` is through the methods:
+- `--no_gui`: disable rendering for faster training.
+- `--sigma`: set the stochasticity of the environment.
+- `--fps`: set the GUI frame rate when rendering is enabled.
+- `--iter`: set the number of training iterations.
+- `--random_seed`: set the environment random seed.
+- `--start_pos`: set the agent start position as `col,row`.
 
-- `Environment()` to initialize the environment
-- `reset()` to reset the environment
-- `step()` to actually take a time step with the environment
-- `Environment().evaluate_agent()` to evaluate the agent after training.
+For the full command reference, run:
 
-[^1]: In case you missed it, this sentence is a joke. Please do not write all your code in the `Environment` class.
+```bash
+uv run python train.py --help
+```
 
-#### The Grid
+## Project Structure
 
-The `Grid` class is the the actual representation of the world on which the agent moves. It is a 2D Numpy array.
+```text
+.
+├── agents/          # Base agent interface and benchmark agents
+├── docs/            # Usage guides and runnable examples
+├── grid_configs/    # Grid files used by the training script
+├── utils/           # Plotting and training logging utilities
+├── world/           # Environment, grid, GUI, and helper code
+├── train.py         # Example training entry point
+├── pyproject.toml   # Project metadata and dependencies
+└── uv.lock          # Locked dependency versions
+```
 
-#### The GUI
+## Documentation
 
-The Graphical User Interface provides a way for you to actually see what the RL agent is doing.
-While performant and written using PyGame, it is still about 1300x slower than not running a GUI.
-Because of this, we recommend using it only while testing/debugging and not while training.
+- [Plotting utilities](docs/plotting.md): format-agnostic training plots for single runs and multi-run comparisons.
+- [Training logger](docs/training_logger.md): console logging utilities for iterative RL training diagnostics.
+
+## Agents
+
+All agents should inherit from `agents.BaseAgent`. The environment expects each agent to implement:
+
+- `update()`: update the agent after an environment step.
+- `take_action()`: choose the next action.
+
+The repository includes benchmark agents in `agents/null_agent.py` and `agents/random_agent.py`.
+
+## Utilities
+
+The `utils` package contains reusable helpers for training analysis:
+
+- `utils.plotting` defines `TrainingHistory`, `SubplotConfig`, `plot_training_history()`, and `plot_training_histories()` for visualising arbitrary training metrics.
+- `utils.training_logger` defines `TrainingLogger` and `ConsoleTrainingLogger` for printing compact training progress and optional Q-table snapshots.
+
+Runnable examples are available in `docs/examples/`:
+
+```bash
+uv run python docs/examples/plotting_example.py
+uv run python docs/examples/training_logger_example.py
+```
+
+The plotting example writes generated figures to a temporary directory. The logger example prints synthetic training progress in both scroll and frame modes.
+
+## Grids
+
+Grid files live in `grid_configs/` and are stored as NumPy arrays. To create new grids, start the grid creator:
+
+```bash
+uv run python world/grid_creator.py
+```
+
+Then open `http://127.0.0.1:5000` in your browser. New grids are saved to `grid_configs/`.
+
+## Environment
+
+The `world.Environment` class owns the interaction loop between an agent and a grid. The main methods are:
+
+- `reset()`: reset the environment state.
+- `step()`: advance the environment by one time step.
+- `evaluate_agent()`: evaluate an agent after training.
+
+Rendering is useful for debugging, but training without the GUI is much faster. Use `--no_gui` for longer training runs.

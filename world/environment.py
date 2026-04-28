@@ -1,6 +1,7 @@
 """
 Environment.
 """
+
 import random
 import numpy as np
 from tqdm import trange
@@ -10,21 +11,23 @@ from time import time, sleep
 from datetime import datetime
 
 from agents import BaseAgent
-from world.helpers import save_results, action_to_direction
+from world.helpers import save_results, action_to_direction, ACTIONS_TO_DIRECTIONS
 from world.grid import Grid
 from world.gui import GUI
 from world.path_visualizer import visualize_path
 
+
 class Environment:
-    def __init__(self,
-                 grid_fp: Path,
-                 no_gui: bool = False,
-                 sigma: float = 0.,
-                 agent_start_pos: tuple[int, int] = None,
-                 reward_fn: callable = None,
-                 target_fps: int = 30,
-                 random_seed: int | float | str | bytes | bytearray | None = 0):
-        
+    def __init__(
+        self,
+        grid_fp: Path,
+        no_gui: bool = False,
+        sigma: float = 0.0,
+        agent_start_pos: tuple[int, int] = None,
+        reward_fn: callable = None,
+        target_fps: int = 30,
+        random_seed: int | float | str | bytes | bytearray | None = 0,
+    ):
         """Creates the Grid Environment for the Reinforcement Learning robot
         from the provided file.
 
@@ -40,7 +43,7 @@ class Environment:
                 calculated as 1-sigma.
             agent_start_pos: Tuple where each agent should start.
                 If None is provided, then a random start position is used.
-            reward_fn: Custom reward function to use. 
+            reward_fn: Custom reward function to use.
             target_fps: How fast the simulation should run if it is being shown
                 in a GUI. If in no_gui mode, then the simulation will run as fast as
                 possible. We may set a low FPS so we can actually see what's
@@ -60,7 +63,7 @@ class Environment:
         self.agent_start_pos = agent_start_pos
         self.terminal_state = False
         self.sigma = sigma
-              
+
         # Set up reward function
         if reward_fn is None:
             warn("No reward function provided. Using default reward.")
@@ -71,9 +74,9 @@ class Environment:
         # GUI specific code: Set up the environment as a blank state.
         self.no_gui = no_gui
         if target_fps <= 0:
-            self.target_spf = 0.
+            self.target_spf = 0.0
         else:
-            self.target_spf = 1. / target_fps
+            self.target_spf = 1.0 / target_fps
         self.gui = None
 
     def _reset_info(self) -> dict:
@@ -83,24 +86,23 @@ class Environment:
         consisting of whether the target was reached or the agent
         moved and the updated agent position.
         """
-        return {"target_reached": False,
-                "agent_moved": False,
-                "actual_action": None}
-    
+        return {"target_reached": False, "agent_moved": False, "actual_action": None}
+
     @staticmethod
     def _reset_world_stats() -> dict:
         """Resets the world stats dictionary.
 
-        world_stats is a dict with information about the 
+        world_stats is a dict with information about the
         environment since last env.reset(). Basically, it
         accumulates information.
         """
-        return {"cumulative_reward": 0,
-                "total_steps": 0,
-                "total_agent_moves": 0,
-                "total_failed_moves": 0,
-                "total_targets_reached": 0,
-                }
+        return {
+            "cumulative_reward": 0,
+            "total_steps": 0,
+            "total_agent_moves": 0,
+            "total_failed_moves": 0,
+            "total_targets_reached": 0,
+        }
 
     @staticmethod
     def _format_grid(grid, agent_pos=None) -> str:
@@ -145,9 +147,7 @@ class Environment:
         rows, cols = self.grid.shape
         if not (0 <= pos[0] < rows and 0 <= pos[1] < cols):
             print(self._format_grid(self.grid))
-            raise ValueError(
-                f"Start position {pos} is out of bounds. "
-                f"Grid size is {rows}x{cols}.")
+            raise ValueError(f"Start position {pos} is out of bounds. " f"Grid size is {rows}x{cols}.")
 
         cell_names = {0: "empty", 1: "boundary wall", 2: "obstacle", 3: "target"}
         cell_value = self.grid[pos]
@@ -156,7 +156,8 @@ class Environment:
             raise ValueError(
                 f"Start position {pos} is a {cell_names.get(cell_value, 'unknown')} "
                 f"cell (value={cell_value}). The agent can only start on an "
-                f"empty cell.")
+                f"empty cell."
+            )
 
     def _initialize_agent_pos(self):
         """Initializes agent position from the given location or
@@ -183,16 +184,13 @@ class Environment:
             idx = random.randint(0, len(zeros[0]) - 1)
             self.agent_pos = (zeros[0][idx], zeros[1][idx])
             print(self._format_grid(self.grid, self.agent_pos))
-            print(f"\nNo start position provided. "
-                  f"Randomly placed agent at {self.agent_pos}.")
-            print(f"To use this position next run: "
-                  f"--start_pos {self.agent_pos[0]},{self.agent_pos[1]}")
-
+            print(f"\nNo start position provided. " f"Randomly placed agent at {self.agent_pos}.")
+            print(f"To use this position next run: " f"--start_pos {self.agent_pos[0]},{self.agent_pos[1]}")
 
     def reset(self, **kwargs) -> tuple[int, int]:
         """Reset the environment to an initial state.
 
-        You can fit it keyword arguments which will overwrite the 
+        You can fit it keyword arguments which will overwrite the
         initial arguments provided when initializing the environment.
 
         Args:
@@ -211,13 +209,12 @@ class Environment:
                 case "no_gui":
                     self.no_gui = v
                 case "target_fps":
-                    self.target_spf = 1. / v
+                    self.target_spf = 1.0 / v
                 case "sigma" | "reward_fn" | "random_seed":
                     raise ValueError(f"{k} cannot be changed after initialization.")
                 case _:
-                    raise ValueError(f"{k} is not one of the possible "
-                                     f"keyword arguments.")
-        
+                    raise ValueError(f"{k} is not one of the possible " f"keyword arguments.")
+
         # Reset variables
         self.grid = Grid.load_grid(self.grid_fp).cells
         self.terminal_state = False
@@ -238,7 +235,7 @@ class Environment:
         return self.agent_pos
 
     def _move_agent(self, new_pos: tuple[int, int]):
-        """Moves the agent, if possible and updates the 
+        """Moves the agent, if possible and updates the
         corresponding stats.
 
         Args:
@@ -265,10 +262,9 @@ class Environment:
                 self.world_stats["total_agent_moves"] += 1
                 # Otherwise, the agent can't move and nothing happens
             case _:
-                raise ValueError(f"Grid is badly formed. It has a value of "
-                                 f"{self.grid[new_pos]} at position "
-                                 f"{new_pos}.")
-        
+                raise ValueError(
+                    f"Grid is badly formed. It has a value of " f"{self.grid[new_pos]} at position " f"{new_pos}."
+                )
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool]:
         """This function makes the agent take a step on the grid.
@@ -280,16 +276,16 @@ class Environment:
             - 3: Move right
         Args:
             action: Integer representing the action the agent should
-                take. 
+                take.
 
         Returns:
             0) Current state,
             1) The reward for the agent,
             2) If the terminal state has been reached, and
         """
-        
+
         self.world_stats["total_steps"] += 1
-        
+
         # GUI specific code
         is_single_step = False
         if not self.no_gui:
@@ -303,26 +299,25 @@ class Environment:
                 # Otherwise, we render the current state only
                 paused_info = self._reset_info()
                 paused_info["agent_moved"] = True
-                self.gui.render(self.grid, self.agent_pos, paused_info,
-                                0, is_single_step)    
+                self.gui.render(self.grid, self.agent_pos, paused_info, 0, is_single_step)
 
         # Add stochasticity into the agent action
         val = random.random()
         if val > self.sigma:
             actual_action = action
         else:
-            actual_action = random.randint(0, 3)
-        
+            actual_action = random.randint(0, len(ACTIONS_TO_DIRECTIONS) - 1)
+
         # Make the move
         self.info["actual_action"] = actual_action
-        direction = action_to_direction(actual_action)    
+        direction = action_to_direction(actual_action)
         new_pos = (self.agent_pos[0] + direction[0], self.agent_pos[1] + direction[1])
 
         # Calculate the reward for the agent
         reward = self.reward_fn(self.grid, new_pos)
 
         self._move_agent(new_pos)
-        
+
         self.world_stats["cumulative_reward"] += reward
 
         # GUI specific code
@@ -330,8 +325,7 @@ class Environment:
             time_to_wait = self.target_spf - (time() - start_time)
             if time_to_wait > 0:
                 sleep(time_to_wait)
-            self.gui.render(self.grid, self.agent_pos, self.info,
-                            reward, is_single_step)
+            self.gui.render(self.grid, self.agent_pos, self.info, reward, is_single_step)
 
         return self.agent_pos, reward, self.terminal_state, self.info
 
@@ -359,19 +353,20 @@ class Environment:
                 pass
             case 3:  # Moved to a target tile
                 reward = 10
-            case _: # "Illegal move"
-                raise ValueError(f"Grid cell should not have value: {grid[agent_pos]}.",
-                                 f"at position {agent_pos}")
+            case _:  # "Illegal move"
+                raise ValueError(f"Grid cell should not have value: {grid[agent_pos]}.", f"at position {agent_pos}")
         return reward
 
     @staticmethod
-    def evaluate_agent(grid_fp: Path,
-                       agent: BaseAgent,
-                       max_steps: int,
-                       sigma: float = 0.,
-                       agent_start_pos: tuple[int, int] = None,
-                       random_seed: int | float | str | bytes | bytearray = 0,
-                       show_images: bool = False):
+    def evaluate_agent(
+        grid_fp: Path,
+        agent: BaseAgent,
+        max_steps: int,
+        sigma: float = 0.0,
+        agent_start_pos: tuple[int, int] = None,
+        random_seed: int | float | str | bytes | bytearray = 0,
+        show_images: bool = False,
+    ):
         """Evaluates a single trained agent's performance.
 
         What this does is it creates a completely new environment from the
@@ -394,13 +389,15 @@ class Environment:
                 evaluation. If False, only saves the images.
         """
 
-        env = Environment(grid_fp=grid_fp,
-                          no_gui=True,
-                          sigma=sigma,
-                          agent_start_pos=agent_start_pos,
-                          target_fps=-1,
-                          random_seed=random_seed)
-        
+        env = Environment(
+            grid_fp=grid_fp,
+            no_gui=True,
+            sigma=sigma,
+            agent_start_pos=agent_start_pos,
+            target_fps=-1,
+            random_seed=random_seed,
+        )
+
         state = env.reset()
         initial_grid = np.copy(env.grid)
 
@@ -408,7 +405,7 @@ class Environment:
         agent_path = [env.agent_pos]
 
         for _ in trange(max_steps, desc="Evaluating agent"):
-            
+
             action = agent.take_action(state)
             state, _, terminated, _ = env.step(action)
 
