@@ -129,3 +129,27 @@ uv run python docs/examples/plotting_example.py
 ```
 
 It generates two figures with synthetic data demonstrating both functions.
+
+---
+
+## RL Grid-World Plotting (`utils.rl_plots`)
+
+When you need value-function and policy visualizations on top of an environment
+grid, use `utils/rl_plots.py` instead of `utils/plotting.py`.
+
+`utils.rl_plots` provides:
+
+- `plot_value_function(...)`
+- `plot_policy(...)`
+- `plot_value_and_policy(...)`
+- `plot_algorithm_comparison(...)`
+- `plot_hyperparameter_comparison(...)`
+
+The grid convention is `grid[col, row]`, and policy actions are encoded as
+`0=Down`, `1=Up`, `2=Left`, `3=Right`.
+
+Runnable example:
+
+```bash
+uv run python docs/examples/rl_plots_example.py
+```

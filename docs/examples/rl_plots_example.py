@@ -1,10 +1,8 @@
 """Example: using ``utils.rl_plots`` with all three algorithm types.
 
-Run from the project root:
+Run from the project root with uv:
 
     uv run python docs/examples/rl_plots_example.py
-    or
-    python docs/examples/rl_plots_example.py 
 """
 
 from __future__ import annotations
