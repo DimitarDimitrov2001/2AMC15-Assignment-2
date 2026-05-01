@@ -4,9 +4,8 @@
 
 `utils/training_logger.py` provides a small, environment-agnostic logger
 for iterative reinforcement-learning training.  It keeps the same
-`log_iteration(...)` call signature used by the current training functions, so
-it can be passed directly into `q_learning`, `double_q_learning`, or
-`q_learning_vfa`.
+`log_iteration(...)` call signature regardless of the algorithm, so it can be
+plugged into any training loop that reports iterative updates.
 
 Unlike the older live logger, this module does not decode states into domain
 labels.  If a Q-table is shown, states and actions are displayed as plain
@@ -29,8 +28,8 @@ def log_iteration(
     ...
 ```
 
-The existing training algorithms call this method every `logging_interval`
-episodes and once more when convergence is reached.
+Your training loop decides when to call this method (for example every
+N episodes/iterations and at convergence checkpoints).
 
 ## `ConsoleTrainingLogger`
 

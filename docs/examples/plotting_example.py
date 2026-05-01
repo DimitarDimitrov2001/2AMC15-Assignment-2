@@ -9,7 +9,7 @@ climbing, delta-Q decaying) and produces two figures:
 2. **Multi-run panel grid** -- ``plot_training_histories`` comparing four
    fictional hyperparameter configurations side-by-side.
 
-Run from the project root:
+Run from the project root with uv:
 
     uv run python docs/examples/plotting_example.py
 """

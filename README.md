@@ -56,8 +56,9 @@ uv run python train.py --help
 
 ## Documentation
 
-- [Plotting utilities](docs/plotting.md): format-agnostic training plots for single runs and multi-run comparisons.
+- [Plotting utilities](docs/plotting.md): generic training-history plotting plus links to RL grid-world plotting references.
 - [Training logger](docs/training_logger.md): console logging utilities for iterative RL training diagnostics.
+- [RL plotting example](docs/examples/rl_plots_example.py): runnable demonstration of value/policy and algorithm-comparison plots.
 
 ## Agents
 
@@ -73,16 +74,18 @@ The repository includes benchmark agents in `agents/null_agent.py` and `agents/r
 The `utils` package contains reusable helpers for training analysis:
 
 - `utils.plotting` defines `TrainingHistory`, `SubplotConfig`, `plot_training_history()`, and `plot_training_histories()` for visualising arbitrary training metrics.
+- `utils.rl_plots` defines `plot_value_function()`, `plot_policy()`, `plot_value_and_policy()`, `plot_algorithm_comparison()`, and `plot_hyperparameter_comparison()` for RL grid-world diagnostics.
 - `utils.training_logger` defines `TrainingLogger` and `ConsoleTrainingLogger` for printing compact training progress and optional Q-table snapshots.
 
 Runnable examples are available in `docs/examples/`:
 
 ```bash
 uv run python docs/examples/plotting_example.py
+uv run python docs/examples/rl_plots_example.py
 uv run python docs/examples/training_logger_example.py
 ```
 
-The plotting example writes generated figures to a temporary directory. The logger example prints synthetic training progress in both scroll and frame modes.
+The plotting examples write generated figures to temporary directories. The logger example prints synthetic training progress in both scroll and frame modes.
 
 ## Grids
 
