@@ -106,3 +106,13 @@ The `world.Environment` class owns the interaction loop between an agent and a g
 - `evaluate_agent()`: evaluate an agent after training.
 
 Rendering is useful for debugging, but training without the GUI is much faster. Use `--no_gui` for longer training runs.
+
+## Reward Function
+
+The `world.rewards` module provides a lightweight reward function based on the attempted next grid cell:
+
+- Empty cell (`0`): `-1`
+- Boundary wall (`1`) or obstacle (`2`): `-5`
+- Target (`3`): `max(10, 2 * manhattan_distance(start_pos, target_pos))`
+
+This keeps the reward easy to set up from the grid, the actual start position, and the destination. The `-1` step reward encourages shorter paths, while the `-5` wall and obstacle penalty discourages invalid moves without over-penalising stochastic actions from `--sigma`. The target reward scales with Manhattan distance so larger grids still provide a strong success signal without adding extra reward shaping.

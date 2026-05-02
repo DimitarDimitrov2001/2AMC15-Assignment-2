@@ -2,15 +2,18 @@
 Train your RL Agent in this file.
 """
 
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from pathlib import Path
+
 from tqdm import trange
 
-from world import Environment
+from world import Environment, build_manhattan_reward_function, find_target_position
 from agents.random_agent import RandomAgent
 
 
-def parse_args():
+def parse_args() -> Namespace:
+    """Parse command line arguments for the training script."""
+
     p = ArgumentParser(description="DIC Reinforcement Learning Trainer.")
     p.add_argument("GRID", type=Path, nargs="+", help="Paths to the grid file to use. There can be more than " "one.")
     p.add_argument("--no_gui", action="store_true", help="Disables rendering to train faster")
@@ -31,12 +34,8 @@ def parse_args():
     return p.parse_args()
 
 
-def reward_function(grid, agent_pos):
-    if grid[agent_pos] == 3:
-        return 20
-    elif grid[agent_pos] == 2:
-        return -7
-    return -1
+def _uninitialized_reward_function(_grid: object, _agent_pos: tuple[int, int]) -> int:
+    raise RuntimeError("Reward function must be initialized after the environment reset.")
 
 
 def main(
@@ -47,7 +46,7 @@ def main(
     sigma: float,
     random_seed: int,
     start_pos: tuple[int, int] | None,
-):
+) -> None:
     """Main loop of the program."""
 
     for grid in grid_paths:
@@ -55,7 +54,7 @@ def main(
         env = Environment(
             grid,
             no_gui,
-            reward_fn=reward_function,
+            reward_fn=_uninitialized_reward_function,
             sigma=sigma,
             target_fps=fps,
             agent_start_pos=start_pos,
@@ -67,6 +66,8 @@ def main(
 
         # Always reset the environment to initial state
         initial_pos = env.reset()
+        target_pos = find_target_position(env.grid)
+        env.reward_fn = build_manhattan_reward_function(initial_pos, target_pos)
         state = initial_pos
         for _ in trange(iters):
 
