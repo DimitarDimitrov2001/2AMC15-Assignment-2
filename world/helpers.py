@@ -13,8 +13,14 @@ ACTIONS_TO_DIRECTIONS = {
 def action_to_direction(action: int) -> tuple[int, int]:
     return ACTIONS_TO_DIRECTIONS[action]
 
-def save_results(file_name: str, world_stats: dict, path_image: Image.Image, show_images: bool) -> None:
-    out_dir = Path("results/")
+def save_results(
+    file_name: str,
+    world_stats: dict,
+    path_image: Image.Image,
+    show_images: bool,
+    out_dir: Path | str = Path("results/"),
+) -> None:
+    out_dir = Path(out_dir)
     if not out_dir.exists():
         warn("Evaluation output directory does not exist. Creating the "
              "directory.")
