@@ -9,6 +9,7 @@ from tqdm import trange
 
 from world import Environment, build_manhattan_reward_function, find_target_position
 from agents.random_agent import RandomAgent
+from agents.q_learning_agent import QLearningAgent
 
 
 def parse_args() -> Namespace:
@@ -16,12 +17,20 @@ def parse_args() -> Namespace:
 
     p = ArgumentParser(description="DIC Reinforcement Learning Trainer.")
     p.add_argument("GRID", type=Path, nargs="+", help="Paths to the grid file to use. There can be more than " "one.")
+
+    # Added to help choose an agent
+    p.add_argument("--agent", choices=("random", "q_learning"), default="q_learning", help="Agent to run.")
+
     p.add_argument("--no_gui", action="store_true", help="Disables rendering to train faster")
     p.add_argument("--sigma", type=float, default=0.1, help="Sigma value for the stochasticity of the environment.")
     p.add_argument(
         "--fps", type=int, default=30, help="Frames per second to render at. Only used if " "no_gui is not set."
     )
-    p.add_argument("--iter", type=int, default=1000, help="Number of iterations to go through.")
+    p.add_argument("--iter", type=int, default=1000, help="Number of steps per episode.")
+    p.add_argument("--episodes", type=int, default=1000, help="Number of Q-learning training episodes.")
+    p.add_argument("--alpha", type=float, default=0.5, help="Q-learning learning rate.")
+    p.add_argument("--gamma", type=float, default=0.95, help="Discount factor.")
+    p.add_argument("--epsilon", type=float, default=0.1, help="Q-learning exploration rate.")
     p.add_argument("--random_seed", type=int, default=0, help="Random seed value for the environment.")
     p.add_argument(
         "--start_pos",
@@ -37,13 +46,56 @@ def parse_args() -> Namespace:
 def _uninitialized_reward_function(_grid: object, _agent_pos: tuple[int, int]) -> int:
     raise RuntimeError("Reward function must be initialized after the environment reset.")
 
+def parse_start_pos(raw_start_pos: str | None) -> tuple[int, int] | None:
+    if raw_start_pos is None:
+        return None
+    parts = raw_start_pos.split(",")
+    if len(parts) != 2:
+        raise ValueError("--start_pos must be formatted as col,row")
+    return int(parts[0]), int(parts[1])
+
+def train_q_learning_agent(
+    env: Environment,
+    agent: QLearningAgent,
+    episodes: int,
+    max_steps_per_episode: int,
+) -> None:
+    """Train the Q-learning agent over multiple episodes."""
+
+    for _episode in trange(episodes, desc="Training Q-learning agent"):
+        state = env.reset()
+        agent.start_episode()
+
+        for _step in range(max_steps_per_episode):
+            action = agent.take_action(state)
+
+            next_state, reward, terminated, _info = env.step(action)
+
+            agent.update(
+                next_state,
+                reward,
+                action,
+                terminated=terminated,
+            )
+
+            state = next_state
+
+            if terminated:
+                break
+
+        agent.end_episode()
+
 
 def main(
     grid_paths: list[Path],
     no_gui: bool,
     iters: int,
+    episodes: int,
     fps: int,
     sigma: float,
+    alpha: float,
+    gamma: float,
+    epsilon: float,
     random_seed: int,
     start_pos: tuple[int, int] | None,
 ) -> None:
@@ -62,35 +114,48 @@ def main(
         )
 
         # Initialize agent
-        agent = RandomAgent()
+        # agent = RandomAgent()
 
-        # Always reset the environment to initial state
+        # Reset the environment once to obtain initial state
         initial_pos = env.reset()
+        # Use the same start position for every episode
+        env.agent_start_pos = initial_pos
         target_pos = find_target_position(env.grid)
         env.reward_fn = build_manhattan_reward_function(initial_pos, target_pos)
-        state = initial_pos
-        for _ in trange(iters):
+        
+        
+        agent = QLearningAgent(
+            alpha=alpha,
+            gamma=gamma,
+            epsilon=epsilon,
+            n_actions=4,
+        )
 
-            # Agent takes an action based on the latest observation and info.
-            action = agent.take_action(state)
-
-            # The action is performed in the environment
-            state, reward, terminated, info = env.step(action)
-
-            # If the final state is reached, stop.
-            if terminated:
-                break
-
-            agent.update(state, reward, info["actual_action"])
+        train_q_learning_agent(
+            env=env,
+            agent=agent,
+            episodes=episodes,
+            max_steps_per_episode=iters,
+        )
 
         # Evaluate the agent
+        agent.set_eval_mode()
         Environment.evaluate_agent(grid, agent, iters, sigma, agent_start_pos=initial_pos, random_seed=random_seed)
 
 
 if __name__ == "__main__":
     args = parse_args()
-    start_pos = None
-    if args.start_pos is not None:
-        parts = args.start_pos.split(",")
-        start_pos = (int(parts[0]), int(parts[1]))
-    main(args.GRID, args.no_gui, args.iter, args.fps, args.sigma, args.random_seed, start_pos)
+
+    main(
+        grid_paths=args.GRID,
+        no_gui=args.no_gui,
+        iters=args.iter,
+        episodes=args.episodes,
+        fps=args.fps,
+        sigma=args.sigma,
+        alpha=args.alpha,
+        gamma=args.gamma,
+        epsilon=args.epsilon,
+        random_seed=args.random_seed,
+        start_pos=parse_start_pos(args.start_pos),
+    )
