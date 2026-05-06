@@ -19,12 +19,16 @@ from agents import BaseAgent
 
 class QLearningAgent(BaseAgent):
 
-    def __init__(self, alpha: float = 0.5, gamma: float = 0.95, epsilon: float = 0.1, n_actions: int = 4):
+    def __init__(self, alpha: float = 0.5, gamma: float = 0.95, epsilon: float = 1.0, epsilon_min = 0.05, epsilon_decay = 0.995, alpha_min = 0.05, alpha_decay = 0.999, n_actions: int = 4):
         super().__init__()
 
         self.alpha = alpha
         self.gamma = gamma
         self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.alpha_min = alpha_min
+        self.alpha_decay = alpha_decay
         self.n_actions = n_actions
 
         self.training = True
@@ -36,6 +40,10 @@ class QLearningAgent(BaseAgent):
         self._last_state: tuple[int, int] | None = None
 
     def start_episode(self) -> None:
+        # At the end of each episode, decay exploration and learning rate (or keep the minimal value)
+        if self.training:
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+            self.alpha = max(self.alpha_min, self.alpha * self.alpha_decay)
         # Reset memory at the start of each episode
         self._last_state = None
 

@@ -30,7 +30,11 @@ def parse_args() -> Namespace:
     p.add_argument("--episodes", type=int, default=1000, help="Number of Q-learning training episodes.")
     p.add_argument("--alpha", type=float, default=0.5, help="Q-learning learning rate.")
     p.add_argument("--gamma", type=float, default=0.95, help="Discount factor.")
-    p.add_argument("--epsilon", type=float, default=0.1, help="Q-learning exploration rate.")
+    p.add_argument("--epsilon", type=float, default=1.0, help="Q-learning initial exploration rate.")
+    p.add_argument("--epsilon_min", type=float, default=0.05, help="Q-learning minimum exploration rate.")
+    p.add_argument("--epsilon_decay", type=float, default=0.995, help="Decay rate of epsilon after every episode.")
+    p.add_argument("--alpha_min", type=float, default=0.05, help="Q-learning minimum learning rate.")
+    p.add_argument("--alpha_decay", type=float, default=0.999, help="Decay rate of alpha after every episode.")
     p.add_argument("--random_seed", type=int, default=0, help="Random seed value for the environment.")
     p.add_argument(
         "--start_pos",
@@ -60,7 +64,6 @@ def train_q_learning_agent(
     episodes: int,
     max_steps_per_episode: int,
 ) -> None:
-    """Train the Q-learning agent over multiple episodes."""
 
     for _episode in trange(episodes, desc="Training Q-learning agent"):
         state = env.reset()
@@ -85,7 +88,7 @@ def train_q_learning_agent(
 
         agent.end_episode()
 
-
+# Main program loop
 def main(
     grid_paths: list[Path],
     no_gui: bool,
@@ -96,10 +99,13 @@ def main(
     alpha: float,
     gamma: float,
     epsilon: float,
+    epsilon_min: float,
+    epsilon_decay: float,
+    alpha_min: float,
+    alpha_decay: float,
     random_seed: int,
     start_pos: tuple[int, int] | None,
 ) -> None:
-    """Main loop of the program."""
 
     for grid in grid_paths:
         # Set up the environment
@@ -128,6 +134,10 @@ def main(
             alpha=alpha,
             gamma=gamma,
             epsilon=epsilon,
+            epsilon_min=epsilon_min,
+            epsilon_decay=epsilon_decay,
+            alpha_min=alpha_min,
+            alpha_decay=alpha_decay,
             n_actions=4,
         )
 
@@ -156,6 +166,10 @@ if __name__ == "__main__":
         alpha=args.alpha,
         gamma=args.gamma,
         epsilon=args.epsilon,
+        epsilon_min=args.epsilon_min,
+        epsilon_decay=args.epsilon_decay,
+        alpha_min=args.alpha_min,
+        alpha_decay=args.alpha_decay,
         random_seed=args.random_seed,
         start_pos=parse_start_pos(args.start_pos),
     )
