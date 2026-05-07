@@ -116,3 +116,17 @@ The `world.rewards` module provides a lightweight reward function based on the a
 - Target (`3`): `max(10, 2 * manhattan_distance(start_pos, target_pos))`
 
 This keeps the reward easy to set up from the grid, the actual start position, and the destination. The `-1` step reward encourages shorter paths, while the `-5` wall and obstacle penalty discourages invalid moves without over-penalising stochastic actions from `--sigma`. The target reward scales with Manhattan distance so larger grids still provide a strong success signal without adding extra reward shaping.
+
+## Value Iteration Additions
+
+This project now includes a tabular value-iteration implementation for Assignment 1. The new agent is implemented in `agents/value_iteration_agent.py` and uses the known grid dynamics, the stochasticity parameter `sigma`, and the Manhattan reward function from `world/rewards.py`. The state is the robot position `(col, row)`, with empty cells and the target treated as valid states. Walls and obstacles are blocked, failed moves keep the robot in place, and reaching the target terminates the episode.
+
+`train.py` was extended so value iteration can be selected with `--agent value_iteration`, while keeping the random baseline available through `--agent random`. The value-iteration options include `--gamma`, `--theta`, and `--vi_max_iter`. Evaluation is still run after training, using `--iter` as the maximum number of steps per rollout and `--eval_episodes` as the number of evaluation rollouts.
+
+Evaluation and artifact writing were moved into helper modules: `utils/evaluation.py` computes rollout metrics such as success rate, discounted return, undiscounted return, and episode length, while `utils/artifacts.py` saves metrics, evaluation summaries, value/policy plots, and path visualizations. A typical value-iteration run writes `*_metrics.json`, `*_evaluation_summary.txt`, `*_value_policy.png`, `*_path.png`, and `*_path.txt` to the selected `--out_dir`.
+
+Example command for the required A1 grid:
+
+```bash
+uv run python train.py grid_configs/A1_grid.npy --agent value_iteration --no_gui --start_pos 1,12 --sigma 0.02 --gamma 0.9 --theta 1e-6 --vi_max_iter 1000 --iter 1000 --eval_episodes 50 --out_dir results/vi_A1_low_stochasticity_sigma_0_02_gamma_0_9
+```
