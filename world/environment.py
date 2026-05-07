@@ -364,8 +364,11 @@ class Environment:
         max_steps: int,
         sigma: float = 0.0,
         agent_start_pos: tuple[int, int] = None,
+        reward_fn: callable = None,
         random_seed: int | float | str | bytes | bytearray = 0,
         show_images: bool = False,
+        out_dir: Path | str = Path("results/"),
+        file_name: str | None = None,
     ):
         """Evaluates a single trained agent's performance.
 
@@ -384,9 +387,12 @@ class Environment:
             max_steps: Max number of steps to take.
             sigma: same as abve.
             agent_start_pos: same as above.
+            reward_fn: Custom reward function to use during evaluation.
             random_seed: same as above.
             show_images: Whether to show the images at the end of the
                 evaluation. If False, only saves the images.
+            out_dir: Directory where evaluation text and path image are saved.
+            file_name: Optional base file name for output artifacts.
         """
 
         env = Environment(
@@ -394,6 +400,7 @@ class Environment:
             no_gui=True,
             sigma=sigma,
             agent_start_pos=agent_start_pos,
+            reward_fn=reward_fn,
             target_fps=-1,
             random_seed=random_seed,
         )
@@ -417,6 +424,7 @@ class Environment:
         env.world_stats["targets_remaining"] = np.sum(env.grid == 3)
 
         path_image = visualize_path(initial_grid, agent_path)
-        file_name = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        if file_name is None:
+            file_name = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
 
-        save_results(file_name, env.world_stats, path_image, show_images)
+        save_results(file_name, env.world_stats, path_image, show_images, out_dir)
