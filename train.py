@@ -36,6 +36,8 @@ def parse_args() -> Namespace:
     p.add_argument("--alpha_min", type=float, default=0.05, help="Q-learning minimum learning rate.")
     p.add_argument("--alpha_decay", type=float, default=0.999, help="Decay rate of alpha after every episode.")
     p.add_argument("--random_seed", type=int, default=0, help="Random seed value for the environment.")
+    p.add_argument("--fixed_epsilon", action="store_true", help="Use fixed epsilon instead of decaying epsilon.")
+    p.add_argument("--fixed_alpha", action="store_true", help="Use fixed alpha instead of decaying alpha.")
     p.add_argument(
         "--start_pos",
         type=str,
@@ -103,6 +105,8 @@ def main(
     epsilon_decay: float,
     alpha_min: float,
     alpha_decay: float,
+    fixed_epsilon: bool,
+    fixed_alpha: bool,
     random_seed: int,
     start_pos: tuple[int, int] | None,
 ) -> None:
@@ -138,6 +142,8 @@ def main(
             epsilon_decay=epsilon_decay,
             alpha_min=alpha_min,
             alpha_decay=alpha_decay,
+            decaying_epsilon=not fixed_epsilon,
+            decaying_alpha=not fixed_alpha,
             n_actions=4,
         )
 
@@ -170,6 +176,8 @@ if __name__ == "__main__":
         epsilon_decay=args.epsilon_decay,
         alpha_min=args.alpha_min,
         alpha_decay=args.alpha_decay,
+        fixed_epsilon=args.fixed_epsilon,
+        fixed_alpha=args.fixed_alpha,
         random_seed=args.random_seed,
         start_pos=parse_start_pos(args.start_pos),
     )

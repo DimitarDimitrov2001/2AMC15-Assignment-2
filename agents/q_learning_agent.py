@@ -19,7 +19,7 @@ from agents import BaseAgent
 
 class QLearningAgent(BaseAgent):
 
-    def __init__(self, alpha: float = 0.5, gamma: float = 0.95, epsilon: float = 1.0, epsilon_min = 0.05, epsilon_decay = 0.995, alpha_min = 0.05, alpha_decay = 0.999, n_actions: int = 4):
+    def __init__(self, alpha: float = 0.5, gamma: float = 0.95, epsilon: float = 1.0, epsilon_min = 0.05, epsilon_decay = 0.995, alpha_min = 0.05, alpha_decay = 0.999, decaying_epsilon: bool = True, decaying_alpha: bool = True, n_actions: int = 4):
         super().__init__()
 
         self.alpha = alpha
@@ -29,6 +29,8 @@ class QLearningAgent(BaseAgent):
         self.epsilon_decay = epsilon_decay
         self.alpha_min = alpha_min
         self.alpha_decay = alpha_decay
+        self.decaying_epsilon = decaying_epsilon
+        self.decaying_alpha = decaying_alpha
         self.n_actions = n_actions
 
         self.training = True
@@ -40,14 +42,18 @@ class QLearningAgent(BaseAgent):
         self._last_state: tuple[int, int] | None = None
 
     def start_episode(self) -> None:
-        # At the end of each episode, decay exploration and learning rate (or keep the minimal value)
-        if self.training:
-            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-            self.alpha = max(self.alpha_min, self.alpha * self.alpha_decay)
         # Reset memory at the start of each episode
         self._last_state = None
 
     def end_episode(self) -> None:
+        # If decaying epsilon and/or alpha is set to True (default), then we decay exploration and learning rate
+        if self.training:
+            if self.decaying_epsilon:
+                self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+            if self.decaying_alpha:
+                self.alpha = max(self.alpha_min, self.alpha * self.alpha_decay)
+
         # Reset memory at the end of the episode
         self._last_state = None
 
