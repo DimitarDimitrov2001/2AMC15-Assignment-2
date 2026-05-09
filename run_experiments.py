@@ -56,48 +56,61 @@ DEFAULT_GRIDS = [
     Path("grid_configs/example_grid.npy"),
 ]
 
-# ─── Experiment definitions ───────────────────────────────────────────────────
+# ─── Sweep values (only edit here) ───────────────────────────────────────────
+# Change these lists to control which values get compared.
+# Experiment names, folder structure, and plots all update automatically.
+
+SIGMA_VALUES:     list[float] = [0.0, 0.3]
+GAMMA_VALUES:     list[float] = [0.5, 0.99]
+ALPHA_VALUES:     list[float] = [0.1, 0.9]
+EPSILON_VALUES:   list[float] = [0.1, 0.5]
+MC_EP_LEN_VALUES: list[int]   = [200, 5000]
+
+# ─── Experiment definitions (auto-built from sweep values) ────────────────────
+
+def _n(v: float | int) -> str:
+    """Format a number for experiment names, e.g. 0.30 → '0.3', 200 → '200'."""
+    return f"{v:g}"
 
 EXPERIMENTS: list[tuple[str, dict[str, Any]]] = [
-    ("default",           {}),
-    ("sigma=0.0",         {"sigma": 0.0}),
-    ("sigma=0.3",         {"sigma": 0.3}),
-    ("gamma=0.5",         {"gamma": 0.5}),
-    ("gamma=0.99",        {"gamma": 0.99}),
-    ("alpha=0.1",         {"alpha": 0.1}),
-    ("alpha=0.9",         {"alpha": 0.9}),
-    ("epsilon=0.1",       {"epsilon": 0.1}),
-    ("epsilon=0.5",       {"epsilon": 0.5}),
-    ("decay_epsilon",     {"fixed_epsilon": False}),
-    ("fixed_epsilon",     {"fixed_epsilon": True}),
-    ("decay_alpha",       {"fixed_alpha": False}),
-    ("fixed_alpha",       {"fixed_alpha": True}),
-    ("mc_ep_len=200",     {"max_episode_length": 200}),
-    ("mc_ep_len=5000",    {"max_episode_length": 5000}),
+    ("default", {}),
+    *[(f"sigma={_n(v)}",      {"sigma": v})              for v in SIGMA_VALUES],
+    *[(f"gamma={_n(v)}",      {"gamma": v})              for v in GAMMA_VALUES],
+    *[(f"alpha={_n(v)}",      {"alpha": v})              for v in ALPHA_VALUES],
+    *[(f"epsilon={_n(v)}",    {"epsilon": v})            for v in EPSILON_VALUES],
+    ("decay_epsilon",  {"fixed_epsilon": False}),
+    ("fixed_epsilon",  {"fixed_epsilon": True}),
+    ("decay_alpha",    {"fixed_alpha": False}),
+    ("fixed_alpha",    {"fixed_alpha": True}),
+    *[(f"mc_ep_len={_n(v)}", {"max_episode_length": v}) for v in MC_EP_LEN_VALUES],
 ]
 
 # Groups for training-curve comparison plots (each group = two conditions to compare).
 TRAINING_CURVE_GROUPS: list[tuple[str, list[str], list[str], list[str] | None]] = [
-    ("sigma",            ["sigma=0.0",    "sigma=0.3"],        ["avg_reward"],            None),
-    ("gamma",            ["gamma=0.5",    "gamma=0.99"],       ["avg_reward"],            None),
-    ("alpha",            ["alpha=0.1",    "alpha=0.9"],        ["avg_reward"],            None),
-    ("epsilon",          ["epsilon=0.1",  "epsilon=0.5"],      ["avg_reward"],            None),
-    ("epsilon_schedule", ["decay_epsilon","fixed_epsilon"],     ["avg_reward", "epsilon"], None),
-    ("alpha_schedule",   ["decay_alpha",  "fixed_alpha"],      ["avg_reward"],            None),
-    ("mc_ep_len",        ["mc_ep_len=200","mc_ep_len=5000"],   ["avg_reward"],            ["mc"]),
+    ("sigma",            [f"sigma={_n(v)}"      for v in SIGMA_VALUES],     ["avg_reward"],            None),
+    ("gamma",            [f"gamma={_n(v)}"      for v in GAMMA_VALUES],     ["avg_reward"],            None),
+    ("alpha",            [f"alpha={_n(v)}"      for v in ALPHA_VALUES],     ["avg_reward"],            None),
+    ("epsilon",          [f"epsilon={_n(v)}"    for v in EPSILON_VALUES],   ["avg_reward"],            None),
+    ("epsilon_schedule", ["decay_epsilon",        "fixed_epsilon"],          ["avg_reward", "epsilon"], None),
+    ("alpha_schedule",   ["decay_alpha",          "fixed_alpha"],            ["avg_reward"],            None),
+    ("mc_ep_len",        [f"mc_ep_len={_n(v)}"  for v in MC_EP_LEN_VALUES], ["avg_reward"],            ["mc"]),
 ]
 
-# Grouping of experiments on the bar-chart x-axis
-BAR_CHART_GROUPS: list[tuple[str, list[str]]] = [
-    ("baseline",  ["default"]),
-    ("sigma",     ["sigma=0.0", "sigma=0.3"]),
-    ("gamma",     ["gamma=0.5", "gamma=0.99"]),
-    ("alpha",     ["alpha=0.1", "alpha=0.9"]),
-    ("epsilon",   ["epsilon=0.1", "epsilon=0.5"]),
-    ("ε sched.",  ["decay_epsilon", "fixed_epsilon"]),
-    ("α sched.",  ["decay_alpha", "fixed_alpha"]),
-    ("mc ep_len", ["mc_ep_len=200", "mc_ep_len=5000"]),
+# Maps each experiment name to its output subfolder.
+# Experiments in the same group share one folder (data + plots together).
+EXP_GROUPS: list[tuple[str, list[str]]] = [
+    ("baseline",         ["default"]),
+    ("sigma",            [f"sigma={_n(v)}"     for v in SIGMA_VALUES]),
+    ("gamma",            [f"gamma={_n(v)}"     for v in GAMMA_VALUES]),
+    ("alpha",            [f"alpha={_n(v)}"     for v in ALPHA_VALUES]),
+    ("epsilon",          [f"epsilon={_n(v)}"   for v in EPSILON_VALUES]),
+    ("epsilon_schedule", ["decay_epsilon", "fixed_epsilon"]),
+    ("alpha_schedule",   ["decay_alpha",   "fixed_alpha"]),
+    ("mc_ep_len",        [f"mc_ep_len={_n(v)}" for v in MC_EP_LEN_VALUES]),
 ]
+EXP_TO_GROUP: dict[str, str] = {
+    exp: group for group, exps in EXP_GROUPS for exp in exps
+}
 
 EVAL_METRICS = [
     "success_rate",
@@ -184,6 +197,7 @@ def _train_q_learning(
         n_actions=4,
     )
     episode_rewards: list[float] = []
+    episode_epsilons: list[float] = []
     for _ in trange(cfg["ql_episodes"], desc="    training", leave=False):
         state = env.reset()
         env.reward_fn = reward_fn
@@ -199,11 +213,12 @@ def _train_q_learning(
                 break
         agent.end_episode()
         episode_rewards.append(ep_reward)
+        episode_epsilons.append(agent.epsilon)
     agent.set_eval_mode()
 
     history = {
         "episodes": list(range(1, cfg["ql_episodes"] + 1)),
-        "metrics": {"avg_reward": episode_rewards},
+        "metrics": {"avg_reward": episode_rewards, "epsilon": episode_epsilons},
         "hyperparams": {
             "alpha": cfg["alpha"], "epsilon": cfg["epsilon"],
             "gamma": cfg["gamma"], "sigma": cfg["sigma"],
@@ -303,7 +318,7 @@ def _run_one(
 
 def _save_training_curve_plots(
     all_histories: dict[str, dict[str, dict[str, dict | None]]],
-    out_dir: Path,
+    group_dirs: dict[str, Path],
     algorithms: list[str],
 ) -> None:
     """For each hyperparameter group and algorithm, save a plot_hyperparameter_comparison.
@@ -341,7 +356,7 @@ def _save_training_curve_plots(
                         smoothing_window=smoothing,
                         title=f"{group_name} — {ALGO_LABELS[algo]} ({grid_stem})",
                     )
-                    out_path = out_dir / f"{grid_stem}_{group_name}_{algo}_curves.png"
+                    out_path = group_dirs[group_name] / f"{grid_stem}_{algo}_curves.png"
                     fig.savefig(out_path, dpi=130, bbox_inches="tight")
                     plt.close(fig)
                     tqdm.write(f"  Saved {out_path.name}")
@@ -360,7 +375,7 @@ _VI_CONVERGENCE_GROUPS = [
 
 def _save_vi_convergence_plots(
     all_histories: dict[str, dict[str, dict[str, dict | None]]],
-    out_dir: Path,
+    group_dirs: dict[str, Path],
 ) -> None:
     """Plot delta_v over Bellman sweeps for sigma and gamma comparisons."""
     for grid_stem, grid_hists in all_histories.items():
@@ -383,7 +398,7 @@ def _save_vi_convergence_plots(
                     title=f"VI convergence — {group_name} ({grid_stem})",
                     log_scale=True,
                 )
-                out_path = out_dir / f"{grid_stem}_{group_name}_vi_convergence.png"
+                out_path = group_dirs[group_name] / f"{grid_stem}_vi_convergence.png"
                 fig.savefig(out_path, dpi=130, bbox_inches="tight")
                 plt.close(fig)
                 tqdm.write(f"  Saved {out_path.name}")
@@ -415,6 +430,20 @@ def main() -> None:
     grids: list[Path] = args.grid
     algorithms: list[str] = args.algorithms
 
+    # Create one subfolder per comparison group and open its CSV file.
+    group_dirs: dict[str, Path] = {}
+    group_files = {}
+    group_writers = {}
+    for group_name, _ in EXP_GROUPS:
+        gdir = args.out_dir / group_name
+        gdir.mkdir(exist_ok=True)
+        group_dirs[group_name] = gdir
+        gf = (gdir / "results.csv").open("w", newline="", encoding="utf-8")
+        group_files[group_name] = gf
+        gw = csv.DictWriter(gf, fieldnames=CSV_FIELDS)
+        gw.writeheader()
+        group_writers[group_name] = gw
+
     total_runs = len(EXPERIMENTS) * len(algorithms) * len(grids)
     print(f"Running {len(EXPERIMENTS)} experiments × {len(algorithms)} algorithms × {len(grids)} grids = {total_runs} runs")
     print(f"Results → {csv_path}\n")
@@ -423,48 +452,58 @@ def main() -> None:
     # all_histories[grid_stem][exp_name][algo] = history_dict_or_None
     all_histories: dict[str, dict[str, dict[str, dict | None]]] = {}
 
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        writer.writeheader()
+    try:
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writeheader()
 
-        pbar = tqdm(total=total_runs, unit="run")
-        for exp_name, overrides in EXPERIMENTS:
-            cfg = {**DEFAULTS, **overrides}
-            cfg["ql_episodes"]   = args.ql_episodes
-            cfg["mc_episodes"]   = args.mc_episodes
-            cfg["eval_episodes"] = args.eval_episodes
-            cfg["max_steps"]     = args.max_steps
+            pbar = tqdm(total=total_runs, unit="run")
+            for exp_name, overrides in EXPERIMENTS:
+                cfg = {**DEFAULTS, **overrides}
+                cfg["ql_episodes"]   = args.ql_episodes
+                cfg["mc_episodes"]   = args.mc_episodes
+                cfg["eval_episodes"] = args.eval_episodes
+                cfg["max_steps"]     = args.max_steps
 
-            for grid_path in grids:
-                if not grid_path.exists():
-                    tqdm.write(f"  [SKIP] grid not found: {grid_path}")
-                    pbar.update(len(algorithms))
-                    continue
+                group_name = EXP_TO_GROUP[exp_name]
+                group_writer = group_writers[group_name]
+                group_file = group_files[group_name]
 
-                g = grid_path.stem
-                all_histories.setdefault(g, {}).setdefault(exp_name, {})
+                for grid_path in grids:
+                    if not grid_path.exists():
+                        tqdm.write(f"  [SKIP] grid not found: {grid_path}")
+                        pbar.update(len(algorithms))
+                        continue
 
-                for algorithm in algorithms:
-                    pbar.set_description(f"{exp_name} / {algorithm} / {g}")
-                    try:
-                        row, history = _run_one(exp_name, algorithm, grid_path, cfg)
-                        writer.writerow(row)
-                        f.flush()
-                        all_rows.append(row)
-                        all_histories[g][exp_name][algorithm] = history
-                    except Exception as exc:
-                        tqdm.write(f"  [ERROR] {exp_name}/{algorithm}/{g}: {exc}")
-                    pbar.update(1)
+                    g = grid_path.stem
+                    all_histories.setdefault(g, {}).setdefault(exp_name, {})
 
-        pbar.close()
+                    for algorithm in algorithms:
+                        pbar.set_description(f"{exp_name} / {algorithm} / {g}")
+                        try:
+                            row, history = _run_one(exp_name, algorithm, grid_path, cfg)
+                            writer.writerow(row)
+                            f.flush()
+                            group_writer.writerow(row)
+                            group_file.flush()
+                            all_rows.append(row)
+                            all_histories[g][exp_name][algorithm] = history
+                        except Exception as exc:
+                            tqdm.write(f"  [ERROR] {exp_name}/{algorithm}/{g}: {exc}")
+                        pbar.update(1)
+
+            pbar.close()
+    finally:
+        for gf in group_files.values():
+            gf.close()
 
     if args.no_plots:
         print(f"\nDone. Results in {args.out_dir}/")
     else:
         print(f"\nAll runs complete. Generating plots…")
-        _save_training_curve_plots(all_histories, args.out_dir, algorithms)
+        _save_training_curve_plots(all_histories, group_dirs, algorithms)
         if "value_iteration" in algorithms:
-            _save_vi_convergence_plots(all_histories, args.out_dir)
+            _save_vi_convergence_plots(all_histories, group_dirs)
         print(f"\nDone. Results in {args.out_dir}/")
 
 
