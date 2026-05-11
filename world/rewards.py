@@ -6,12 +6,9 @@ from collections.abc import Callable
 
 import numpy as np
 
-RewardFunction = Callable[[np.ndarray, tuple[int, int]], int]
+from world.grid_codes import BOUNDARY_WALL_CELL, EMPTY_CELL, OBSTACLE_CELL, TARGET_CELL
 
-EMPTY_CELL = 0
-BOUNDARY_WALL_CELL = 1
-OBSTACLE_CELL = 2
-TARGET_CELL = 3
+RewardFunction = Callable[[np.ndarray, tuple[int, int]], int]
 
 STEP_REWARD = -1
 WALL_OR_OBSTACLE_REWARD = -5

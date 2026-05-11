@@ -19,25 +19,42 @@ uv sync
 
 ## Usage
 
-Run the example training script with one or more grid files:
+`train.py` is the single training entry point. The first positional
+argument selects the agent (`value_iteration`, `q_learning`, `mc`, or
+`random`), the rest are the grid files to train on.
 
 ```bash
-uv run python train.py grid_configs/solvable.npy
+uv run python train.py value_iteration grid_configs/A1_grid.npy --no_gui
+uv run python train.py q_learning      grid_configs/A1_grid.npy --no_gui --episodes 3000
+uv run python train.py mc              grid_configs/A1_grid.npy --no_gui --episodes 5000
+uv run python train.py random          grid_configs/A1_grid.npy --no_gui
 ```
 
-Useful options:
+Useful shared options (available on every subcommand):
 
 - `--no_gui`: disable rendering for faster training.
 - `--sigma`: set the stochasticity of the environment.
+- `--gamma`: discount factor.
+- `--max_steps`: max environment steps per training episode and per evaluation rollout.
+- `--eval_episodes`: number of evaluation rollouts to run after training.
 - `--fps`: set the GUI frame rate when rendering is enabled.
-- `--iter`: set the number of training iterations.
 - `--random_seed`: set the environment random seed.
 - `--start_pos`: set the agent start position as `col,row`.
+- `--out_dir`: directory for artifacts (defaults to `results/`).
+- `--compare_optimal`: pre-train a Value Iteration agent and use its policy as the optimality reference. Records per-episode policy disagreement (for `q_learning` / `mc`), emits a spatial `*_policy_diff.png` heatmap, and adds the end-of-training disagreement scalar to the evaluation summary. No-op for `value_iteration` and `random`.
 
-For the full command reference, run:
+Agent-specific options:
+
+- **`value_iteration`**: `--theta`, `--vi_max_iter`.
+- **`q_learning`**: `--episodes`, `--alpha`, `--alpha_min`, `--alpha_decay`, `--fixed_alpha`, `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon`.
+- **`mc`**: same alpha/epsilon flags as `q_learning`, plus `--episodes` and `--max_episode_length`. Uses constant-α first-visit updates (`Q ← Q + α·(G − Q)`); the classical 1/N sample-mean variant is not supported.
+
+> **MC training notes.** On-policy first-visit MC with ε-greedy is high-variance: even at the default schedule, a single 5000-episode run on `A1_grid` can swing between 0% and 100% eval success across random seeds. For more stable evaluation, increase `--episodes` (10k–20k) or aggregate across multiple `--random_seed` runs.
+
+For the full per-agent reference, run:
 
 ```bash
-uv run python train.py --help
+uv run python train.py q_learning --help
 ```
 
 ## Project Structure
@@ -74,7 +91,7 @@ The repository includes benchmark agents in `agents/null_agent.py` and `agents/r
 The `utils` package contains reusable helpers for training analysis:
 
 - `utils.plotting` defines `TrainingHistory`, `SubplotConfig`, `plot_training_history()`, and `plot_training_histories()` for visualising arbitrary training metrics.
-- `utils.rl_plots` defines `plot_value_function()`, `plot_policy()`, `plot_value_and_policy()`, `plot_algorithm_comparison()`, and `plot_hyperparameter_comparison()` for RL grid-world diagnostics.
+- `utils.rl_plots` defines `plot_value_function()`, `plot_policy()`, `plot_value_and_policy()`, `plot_policy_disagreement()`, `plot_algorithm_comparison()`, and `plot_hyperparameter_comparison()` for RL grid-world diagnostics.
 - `utils.training_logger` defines `TrainingLogger` and `ConsoleTrainingLogger` for printing compact training progress and optional Q-table snapshots.
 
 Runnable examples are available in `docs/examples/`:
@@ -121,12 +138,12 @@ This keeps the reward easy to set up from the grid, the actual start position, a
 
 This project now includes a tabular value-iteration implementation for Assignment 1. The new agent is implemented in `agents/value_iteration_agent.py` and uses the known grid dynamics, the stochasticity parameter `sigma`, and the Manhattan reward function from `world/rewards.py`. The state is the robot position `(col, row)`, with empty cells and the target treated as valid states. Walls and obstacles are blocked, failed moves keep the robot in place, and reaching the target terminates the episode.
 
-`train.py` was extended so value iteration can be selected with `--agent value_iteration`, while keeping the random baseline available through `--agent random`. The value-iteration options include `--gamma`, `--theta`, and `--vi_max_iter`. Evaluation is still run after training, using `--iter` as the maximum number of steps per rollout and `--eval_episodes` as the number of evaluation rollouts.
+`train.py` exposes a `value_iteration` subcommand that wraps the agent. The value-iteration options include `--gamma`, `--theta`, and `--vi_max_iter`. Evaluation is run after training, using `--max_steps` as the maximum number of steps per rollout and `--eval_episodes` as the number of evaluation rollouts.
 
-Evaluation and artifact writing were moved into helper modules: `utils/evaluation.py` computes rollout metrics such as success rate, discounted return, undiscounted return, and episode length, while `utils/artifacts.py` saves metrics, evaluation summaries, value/policy plots, and path visualizations. A typical value-iteration run writes `*_metrics.json`, `*_evaluation_summary.txt`, `*_value_policy.png`, `*_path.png`, and `*_path.txt` to the selected `--out_dir`.
+Evaluation and artifact writing live in helper modules: `utils/evaluation.py` computes rollout metrics such as success rate, discounted return, undiscounted return, and episode length, while `utils/artifacts.py` saves metrics, evaluation summaries, value/policy plots, and path visualisations. A typical value-iteration run writes `*_metrics.json`, `*_evaluation_summary.txt`, `*_value_policy.png`, `*_path.png`, and `*_path.txt` to the selected `--out_dir`.
 
 Example command for the required A1 grid:
 
 ```bash
-uv run python train.py grid_configs/A1_grid.npy --agent value_iteration --no_gui --start_pos 1,12 --sigma 0.02 --gamma 0.9 --theta 1e-6 --vi_max_iter 1000 --iter 1000 --eval_episodes 50 --out_dir results/vi_A1_low_stochasticity_sigma_0_02_gamma_0_9
+uv run python train.py value_iteration grid_configs/A1_grid.npy --no_gui --start_pos 1,12 --sigma 0.02 --gamma 0.9 --theta 1e-6 --vi_max_iter 1000 --max_steps 1000 --eval_episodes 50 --out_dir results/vi_A1_low_stochasticity_sigma_0_02_gamma_0_9
 ```

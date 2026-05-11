@@ -2,6 +2,7 @@
 - ``plot_value_function``      -- colour heatmap of V(s) or max_a Q(s,a).
 - ``plot_policy``               -- arrow map of the greedy policy.
 - ``plot_value_and_policy``     -- side-by-side combination of the above two.
+- ``plot_policy_disagreement``  -- learned policy with disagreeing cells highlighted.
 - ``plot_algorithm_comparison`` -- overlaid learning curves for DP / MC / TD.
 - ``plot_hyperparameter_comparison`` -- grid of learning curves across multiple hyperparameter settings.
 ---------------------
@@ -22,14 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from utils.plotting import TrainingHistory, _ensure_history, _moving_average, _DEFAULT_PALETTE
-
-# ---------------------------------------------------------------------------
-# Grid cell constants  (must match world/grid.py)
-# ---------------------------------------------------------------------------
-_EMPTY    = 0
-_BOUNDARY = 1
-_OBSTACLE = 2
-_TARGET   = 3
+from world.grid_codes import BOUNDARY_WALL_CELL, EMPTY_CELL, OBSTACLE_CELL, TARGET_CELL
 
 # Action integer -> (delta_col, delta_row)  (matches world/helpers.py)
 _ACTION_TO_DELTA: dict[int, tuple[int, int]] = {
@@ -73,10 +67,10 @@ def _draw_grid_background(ax: plt.Axes, grid: np.ndarray) -> None:
     img = np.zeros((n_rows, n_cols, 4), dtype=float)
 
     cell_rgba = {
-        _BOUNDARY: _hex_to_rgba(_WALL_COLOR),
-        _OBSTACLE: _hex_to_rgba(_OBSTACLE_COLOR),
-        _TARGET:   _hex_to_rgba(_TARGET_COLOR, alpha=0.6),
-        _EMPTY:    _hex_to_rgba(_EMPTY_COLOR),
+        BOUNDARY_WALL_CELL: _hex_to_rgba(_WALL_COLOR),
+        OBSTACLE_CELL:      _hex_to_rgba(_OBSTACLE_COLOR),
+        TARGET_CELL:        _hex_to_rgba(_TARGET_COLOR, alpha=0.6),
+        EMPTY_CELL:         _hex_to_rgba(_EMPTY_COLOR),
     }
     for cell_type, rgba in cell_rgba.items():
         # grid[col, row] → grid.T[row, col]
@@ -233,7 +227,7 @@ def plot_policy(
     for (col, row), action in policy.items():
         if not (0 <= col < n_cols and 0 <= row < n_rows):
             continue
-        if grid[col, row] in (_BOUNDARY, _OBSTACLE):
+        if grid[col, row] in (BOUNDARY_WALL_CELL, OBSTACLE_CELL):
             continue
         dc, dr = _ACTION_TO_DELTA[action]
         x_list.append(col)
@@ -259,6 +253,116 @@ def plot_policy(
         _mark_start(ax, agent_start_pos)
 
     ax.set_title(title, fontsize=11)
+    _configure_grid_axes(ax, n_cols, n_rows)
+
+    return fig, ax
+
+
+# ---------------------------------------------------------------------------
+# plot_policy_disagreement
+# ---------------------------------------------------------------------------
+
+# Disagreement overlay tints: red translucent square per disagreeing cell
+_DISAGREEMENT_COLOR = "#CC3333"
+_MATCH_ARROW_COLOR = "#7A7A7A"
+
+
+def plot_policy_disagreement(
+    grid: np.ndarray,
+    optimal_policy: dict[tuple[int, int], int],
+    learned_policy: dict[tuple[int, int], int],
+    title: str = "Policy Disagreement",
+    agent_start_pos: tuple[int, int] | None = None,
+    ax: plt.Axes | None = None,
+) -> tuple[plt.Figure, plt.Axes]:
+    """Overlay the learned policy with disagreeing cells highlighted red.
+
+    For each state in ``optimal_policy`` the learned greedy action is drawn
+    as an arrow. Cells where the learned action differs from the reference
+    are painted with a red translucent square and their arrow is tinted red.
+    Cells that match keep a neutral grey arrow. Unvisited states default to
+    action 0 — same convention as ``policy_disagreement``.
+
+    Args:
+        grid:            Grid array with shape ``(n_cols, n_rows)``.
+        optimal_policy:  Reference policy ``(col, row) -> action_int``
+                         (typically the trained VI agent's policy).
+        learned_policy:  Learned policy from QL or MC, same shape.
+        title:           Axes title.
+        agent_start_pos: If given, draws a yellow 'S' marker.
+        ax:              Existing axes to draw into. ``None`` creates a new figure.
+
+    Returns:
+        ``(fig, ax)``
+    """
+    import matplotlib.patches as mpatches
+
+    n_cols, n_rows = grid.shape
+
+    standalone = ax is None
+    if standalone:
+        fig, ax = plt.subplots(
+            figsize=(max(6, n_cols * 0.5), max(5, n_rows * 0.5)),
+            constrained_layout=True,
+        )
+    else:
+        fig = ax.get_figure()
+
+    _draw_grid_background(ax, grid)
+
+    match_x: list[int] = []
+    match_y: list[int] = []
+    match_u: list[int] = []
+    match_v: list[int] = []
+    mismatch_x: list[int] = []
+    mismatch_y: list[int] = []
+    mismatch_u: list[int] = []
+    mismatch_v: list[int] = []
+    n_mismatches = 0
+
+    for (col, row), optimal_action in optimal_policy.items():
+        if not (0 <= col < n_cols and 0 <= row < n_rows):
+            continue
+        if grid[col, row] in (BOUNDARY_WALL_CELL, OBSTACLE_CELL):
+            continue
+
+        learned_action = learned_policy.get((col, row), 0)
+        dc, dr = _ACTION_TO_DELTA[learned_action]
+        if learned_action == optimal_action:
+            match_x.append(col); match_y.append(row); match_u.append(dc); match_v.append(dr)
+        else:
+            n_mismatches += 1
+            # Red translucent square underlay (below arrows)
+            rect = mpatches.Rectangle(
+                (col - 0.5, row - 0.5), 1.0, 1.0,
+                facecolor=_DISAGREEMENT_COLOR, alpha=0.35,
+                edgecolor="none", zorder=1.5,
+            )
+            ax.add_patch(rect)
+            mismatch_x.append(col); mismatch_y.append(row); mismatch_u.append(dc); mismatch_v.append(dr)
+
+    arrow_kwargs = dict(
+        angles="xy", scale_units="xy", scale=2.2,
+        width=0.004, headwidth=4, headlength=5, zorder=2,
+    )
+    if match_x:
+        ax.quiver(match_x, match_y, match_u, match_v,
+                  color=_MATCH_ARROW_COLOR, **arrow_kwargs)
+    if mismatch_x:
+        ax.quiver(mismatch_x, mismatch_y, mismatch_u, mismatch_v,
+                  color=_DISAGREEMENT_COLOR, **arrow_kwargs)
+
+    if agent_start_pos is not None:
+        _mark_start(ax, agent_start_pos)
+
+    n_states = sum(
+        1 for (col, row) in optimal_policy
+        if 0 <= col < n_cols and 0 <= row < n_rows
+        and grid[col, row] not in (BOUNDARY_WALL_CELL, OBSTACLE_CELL)
+    )
+    fraction = (n_mismatches / n_states) if n_states else 0.0
+    subtitle = f"  ({n_mismatches}/{n_states} cells disagree, {fraction:.1%})"
+    ax.set_title(title + subtitle, fontsize=11)
     _configure_grid_axes(ax, n_cols, n_rows)
 
     return fig, ax
@@ -328,6 +432,7 @@ def plot_algorithm_comparison(
     log_scale: bool = False,
     convergence_threshold: float | None = None,
     figsize: tuple[float, float] | None = None,
+    colors: dict[str, Any] | None = None,
 ) -> tuple[plt.Figure, np.ndarray]:
     """Overlay training curves for multiple algorithms on the same axes.
 
@@ -360,6 +465,10 @@ def plot_algorithm_comparison(
                                training.
         figsize:               ``(width, height)`` override.  Auto-sized when
                                ``None``.
+        colors:                Optional mapping ``label -> matplotlib color``
+                               that overrides the default palette per curve.
+                               Labels missing from this dict fall back to the
+                               cycling default palette.
 
     Returns:
         ``(fig, axes)`` where ``axes`` has shape ``(n_metrics,)``.
@@ -397,8 +506,9 @@ def plot_algorithm_comparison(
     )
     axes_flat: np.ndarray = axes.ravel()
 
+    color_overrides = colors or {}
     algo_colors = {
-        name: _DEFAULT_PALETTE[i % len(_DEFAULT_PALETTE)]
+        name: color_overrides.get(name, _DEFAULT_PALETTE[i % len(_DEFAULT_PALETTE)])
         for i, name in enumerate(resolved)
     }
 
