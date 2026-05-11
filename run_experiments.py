@@ -21,14 +21,22 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
-from agents.mc_agent import MCAgent
-from agents.q_learning_agent import QLearningAgent
+from agents.trainers import (
+    TRAINERS,
+    TrainConfig,
+    policy_disagreement,
+    setup_grid_run,
+)
 from agents.value_iteration_agent import ValueIterationAgent
 from utils.evaluation import evaluate_policy_metrics
-from utils.rl_plots import plot_hyperparameter_comparison
-from world import Environment, build_manhattan_reward_function, find_target_position
+from utils.plotting import TrainingHistory
+from utils.rl_plots import (
+    plot_algorithm_comparison,
+    plot_hyperparameter_comparison,
+    plot_value_and_policy,
+)
 
 # ─── Default hyperparameters ──────────────────────────────────────────────────
 
@@ -87,13 +95,13 @@ EXPERIMENTS: list[tuple[str, dict[str, Any]]] = [
 
 # Groups for training-curve comparison plots (each group = two conditions to compare).
 TRAINING_CURVE_GROUPS: list[tuple[str, list[str], list[str], list[str] | None]] = [
-    ("sigma",            [f"sigma={_n(v)}"      for v in SIGMA_VALUES],     ["avg_reward"],            None),
-    ("gamma",            [f"gamma={_n(v)}"      for v in GAMMA_VALUES],     ["avg_reward"],            None),
-    ("alpha",            [f"alpha={_n(v)}"      for v in ALPHA_VALUES],     ["avg_reward"],            None),
-    ("epsilon",          [f"epsilon={_n(v)}"    for v in EPSILON_VALUES],   ["avg_reward"],            None),
-    ("epsilon_schedule", ["decay_epsilon",        "fixed_epsilon"],          ["avg_reward", "epsilon"], None),
-    ("alpha_schedule",   ["decay_alpha",          "fixed_alpha"],            ["avg_reward"],            None),
-    ("mc_ep_len",        [f"mc_ep_len={_n(v)}"  for v in MC_EP_LEN_VALUES], ["avg_reward"],            ["mc"]),
+    ("sigma",            [f"sigma={_n(v)}"      for v in SIGMA_VALUES],     ["avg_reward", "policy_diff"], None),
+    ("gamma",            [f"gamma={_n(v)}"      for v in GAMMA_VALUES],     ["avg_reward", "policy_diff"], None),
+    ("alpha",            [f"alpha={_n(v)}"      for v in ALPHA_VALUES],     ["avg_reward", "policy_diff"], None),
+    ("epsilon",          [f"epsilon={_n(v)}"    for v in EPSILON_VALUES],   ["avg_reward", "policy_diff"], None),
+    ("epsilon_schedule", ["decay_epsilon",        "fixed_epsilon"],          ["avg_reward", "policy_diff"], None),
+    ("alpha_schedule",   ["decay_alpha",          "fixed_alpha"],            ["avg_reward", "policy_diff"], None),
+    ("mc_ep_len",        [f"mc_ep_len={_n(v)}"  for v in MC_EP_LEN_VALUES], ["avg_reward", "policy_diff"], ["mc"]),
 ]
 
 # Maps each experiment name to its output subfolder.
@@ -122,6 +130,26 @@ EVAL_METRICS = [
 ALGO_LABELS = {"value_iteration": "VI", "q_learning": "Q-Learning", "mc": "MC"}
 ALGO_COLORS = {"value_iteration": "#1B6CA8", "q_learning": "#C26A1B", "mc": "#2F8F2F"}
 
+# Sequential colormaps used to derive same-hue shades when overlaying
+# multiple conditions of a single algorithm on one plot.
+_ALGO_CMAPS = {
+    "value_iteration": "Blues",
+    "q_learning":      "Oranges",
+    "mc":              "Greens",
+}
+
+
+def _shade_palette(algo: str, n: int) -> list:
+    """Return ``n`` evenly spaced shades of the algorithm's canonical hue.
+
+    Shades run light -> dark so the eye reads later conditions as "stronger".
+    Falls back to a neutral grey ramp for unknown algorithms.
+    """
+    cmap = plt.get_cmap(_ALGO_CMAPS.get(algo, "Greys"))
+    if n <= 1:
+        return [cmap(0.7)]
+    return [cmap(t) for t in np.linspace(0.45, 0.9, n)]
+
 CSV_FIELDS = [
     "experiment", "algorithm", "grid",
     "sigma", "gamma", "alpha", "epsilon",
@@ -132,155 +160,86 @@ CSV_FIELDS = [
 ]
 
 # ─── VI cache ─────────────────────────────────────────────────────────────────
+# VI is deterministic in (grid, sigma, gamma), so we train once per key and
+# reuse the policy across experiments that share those values.
 
 _vi_cache: dict[tuple, ValueIterationAgent] = {}
 
 
-def _get_vi_agent(grid_path, grid_array, reward_fn, sigma, gamma) -> ValueIterationAgent:
+def _get_vi_agent(env, reward_fn, grid_path, sigma, gamma) -> ValueIterationAgent:
+    """Return the cached VI agent for (grid, sigma, gamma), training on miss."""
     key = (str(grid_path), sigma, gamma)
     if key not in _vi_cache:
-        agent = ValueIterationAgent(grid=grid_array, reward_fn=reward_fn, sigma=sigma, gamma=gamma)
-        agent.train()
+        cfg = TrainConfig(
+            sigma=sigma, gamma=gamma, max_steps=0, random_seed=0, eval_episodes=0,
+        )
+        agent, _ = TRAINERS["value_iteration"](env, reward_fn, cfg)
         _vi_cache[key] = agent
     return _vi_cache[key]
 
 
-# ─── Policy-difference metric ─────────────────────────────────────────────────
-
-def _policy_difference(vi_policy: dict, agent) -> float:
-    states = list(vi_policy.keys())
-    if not states:
-        return float("nan")
-    mismatches = 0
-    for state in states:
-        vi_action = vi_policy[state]
-        if isinstance(agent, QLearningAgent):
-            learned = int(np.argmax(agent.q_table[state]))
-        elif isinstance(agent, MCAgent):
-            learned = agent.greedy_action(state)
-        else:
-            return float("nan")
-        if learned != vi_action:
-            mismatches += 1
-    return mismatches / len(states)
-
-
-# ─── Training functions ───────────────────────────────────────────────────────
-
-def _train_value_iteration(
-    grid_array: np.ndarray, reward_fn, cfg: dict
-) -> tuple[ValueIterationAgent, dict | None]:
-    agent = ValueIterationAgent(
-        grid=grid_array, reward_fn=reward_fn,
-        sigma=cfg["sigma"], gamma=cfg["gamma"],
-    )
-    agent.train()
-    history = agent.history.to_dict() if agent.history is not None else None
-    return agent, history
-
-
-def _train_q_learning(
-    grid_path: Path, reward_fn, start_pos: tuple, cfg: dict
-) -> tuple[QLearningAgent, dict]:
-    env = Environment(
-        grid_fp=grid_path, no_gui=True, reward_fn=reward_fn,
-        sigma=cfg["sigma"], target_fps=-1,
-        agent_start_pos=start_pos, random_seed=cfg["random_seed"],
-    )
-    agent = QLearningAgent(
-        alpha=cfg["alpha"], gamma=cfg["gamma"],
-        epsilon=cfg["epsilon"], epsilon_min=cfg["epsilon_min"],
-        epsilon_decay=cfg["epsilon_decay"],
-        alpha_min=cfg["alpha_min"], alpha_decay=cfg["alpha_decay"],
-        decaying_epsilon=not cfg["fixed_epsilon"],
-        decaying_alpha=not cfg["fixed_alpha"],
-        n_actions=4,
-    )
-    episode_rewards: list[float] = []
-    episode_epsilons: list[float] = []
-    for _ in trange(cfg["ql_episodes"], desc="    training", leave=False):
-        state = env.reset()
-        env.reward_fn = reward_fn
-        agent.start_episode()
-        ep_reward = 0.0
-        for _ in range(cfg["max_steps"]):
-            action = agent.take_action(state)
-            next_state, reward, terminated, _ = env.step(action)
-            agent.update(next_state, reward, action, terminated=terminated)
-            state = next_state
-            ep_reward += reward
-            if terminated:
-                break
-        agent.end_episode()
-        episode_rewards.append(ep_reward)
-        episode_epsilons.append(agent.epsilon)
-    agent.set_eval_mode()
-
-    history = {
-        "episodes": list(range(1, cfg["ql_episodes"] + 1)),
-        "metrics": {"avg_reward": episode_rewards, "epsilon": episode_epsilons},
-        "hyperparams": {
-            "alpha": cfg["alpha"], "epsilon": cfg["epsilon"],
-            "gamma": cfg["gamma"], "sigma": cfg["sigma"],
-        },
-        "metadata": {},
-    }
-    return agent, history
-
-
-def _train_mc(
-    grid_path: Path, reward_fn, start_pos: tuple, cfg: dict
-) -> tuple[MCAgent, dict | None]:
-    env = Environment(
-        grid_fp=grid_path, no_gui=True, reward_fn=reward_fn,
-        sigma=cfg["sigma"], target_fps=-1,
-        agent_start_pos=start_pos, random_seed=cfg["random_seed"],
-    )
-    env.reset()
-    env.reward_fn = reward_fn
-
-    agent = MCAgent(
-        gamma=cfg["gamma"],
-        epsilon=cfg["epsilon"], epsilon_min=cfg["epsilon_min"],
-        epsilon_decay=1.0 if cfg["fixed_epsilon"] else cfg["epsilon_decay"],
-        alpha=cfg["alpha"] if cfg["fixed_alpha"] else None,
-        alpha_min=cfg["alpha_min"],
-        alpha_decay=1.0 if cfg["fixed_alpha"] else cfg["alpha_decay"],
-        max_episode_length=cfg["max_episode_length"],
-        random_seed=cfg["random_seed"],
-    )
-    agent.train(env, n_episodes=cfg["mc_episodes"],
-                start_pos=start_pos, verbose=False, reward_fn=reward_fn)
-    history = agent.history.to_dict() if agent.history is not None else None
-    return agent, history
-
-
 # ─── Single run ───────────────────────────────────────────────────────────────
+
+def _cfg_to_train_config(cfg: dict, start_pos: tuple) -> TrainConfig:
+    """Build a TrainConfig from the sweep's per-experiment cfg dict."""
+    return TrainConfig(
+        sigma=cfg["sigma"],
+        gamma=cfg["gamma"],
+        max_steps=cfg["max_steps"],
+        random_seed=cfg["random_seed"],
+        eval_episodes=cfg["eval_episodes"],
+        start_pos=start_pos,
+        alpha=cfg["alpha"],
+        alpha_min=cfg["alpha_min"],
+        alpha_decay=cfg["alpha_decay"],
+        epsilon=cfg["epsilon"],
+        epsilon_min=cfg["epsilon_min"],
+        epsilon_decay=cfg["epsilon_decay"],
+        fixed_alpha=cfg["fixed_alpha"],
+        fixed_epsilon=cfg["fixed_epsilon"],
+        ql_episodes=cfg["ql_episodes"],
+        mc_episodes=cfg["mc_episodes"],
+        max_episode_length=cfg["max_episode_length"],
+    )
+
+
+def _history_to_dict(history) -> dict | None:
+    """Normalise a trainer's history to a plain dict for downstream plotting."""
+    if history is None:
+        return None
+    if isinstance(history, TrainingHistory):
+        return history.to_dict()
+    return history
+
 
 def _run_one(
     experiment: str, algorithm: str, grid_path: Path, cfg: dict
-) -> tuple[dict, dict | None]:
-    grid_array = np.load(grid_path)
-    target_pos = find_target_position(grid_array)
-
-    bootstrap_env = Environment(
-        grid_fp=grid_path, no_gui=True, reward_fn=lambda _g, _p: 0,
-        sigma=cfg["sigma"], target_fps=-1,
-        agent_start_pos=None, random_seed=cfg["random_seed"],
+) -> tuple[dict, dict | None, dict | None]:
+    env, start_pos, reward_fn = setup_grid_run(
+        grid_path=grid_path,
+        sigma=cfg["sigma"],
+        fps=-1,
+        no_gui=True,
+        start_pos=None,
+        random_seed=cfg["random_seed"],
     )
-    start_pos = bootstrap_env.reset()
-    reward_fn = build_manhattan_reward_function(start_pos, target_pos)
+    train_cfg = _cfg_to_train_config(cfg, start_pos)
+
+    trainer = TRAINERS.get(algorithm)
+    if trainer is None:
+        raise ValueError(f"Unknown algorithm: {algorithm}")
+
+    # Pre-fetch the VI reference policy for QL/MC so the trainer can record
+    # per-episode policy disagreement. VI uses its own policy, so skip there.
+    optimal_policy = None
+    if algorithm != "value_iteration":
+        vi_agent = _get_vi_agent(env, reward_fn, grid_path, cfg["sigma"], cfg["gamma"])
+        optimal_policy = vi_agent.policy
 
     t0 = time.perf_counter()
-    if algorithm == "value_iteration":
-        agent, history = _train_value_iteration(grid_array, reward_fn, cfg)
-    elif algorithm == "q_learning":
-        agent, history = _train_q_learning(grid_path, reward_fn, start_pos, cfg)
-    elif algorithm == "mc":
-        agent, history = _train_mc(grid_path, reward_fn, start_pos, cfg)
-    else:
-        raise ValueError(f"Unknown algorithm: {algorithm}")
+    agent, history = trainer(env, reward_fn, train_cfg, optimal_policy=optimal_policy)
     training_time = time.perf_counter() - t0
+    history = _history_to_dict(history)
 
     metrics = evaluate_policy_metrics(
         grid=grid_path, agent=agent, max_steps=cfg["max_steps"],
@@ -292,8 +251,7 @@ def _run_one(
     if algorithm == "value_iteration":
         policy_diff = 0.0
     else:
-        vi = _get_vi_agent(grid_path, grid_array, reward_fn, cfg["sigma"], cfg["gamma"])
-        policy_diff = _policy_difference(vi.policy, agent)
+        policy_diff = policy_disagreement(optimal_policy, agent)
 
     def _fmt(v):
         return "" if v is None else round(float(v), 5)
@@ -312,7 +270,14 @@ def _run_one(
         "policy_difference_from_optimal": _fmt(policy_diff),
         "training_time_s":              round(training_time, 2),
     }
-    return row, history
+
+    values = getattr(agent, "values", None)
+    policy = getattr(agent, "policy", None)
+    vp_payload: dict | None = None
+    if values and policy:
+        vp_payload = {"values": values, "policy": policy, "initial_pos": start_pos}
+
+    return row, history, vp_payload
 
 # ─── Plotting: training-curve comparison ──────────────────────────────────────
 
@@ -321,10 +286,13 @@ def _save_training_curve_plots(
     group_dirs: dict[str, Path],
     algorithms: list[str],
 ) -> None:
-    """For each hyperparameter group and algorithm, save a plot_hyperparameter_comparison.
+    """For each hyperparameter group and algorithm, save a per-algorithm curve plot.
 
     Each algorithm gets its own figure so that Q-learning curves (ql_episodes long)
-    and MC curves (mc_episodes long) are never overlaid on the same x-axis.
+    and MC curves (mc_episodes long) are never overlaid on the same x-axis. When
+    the group is restricted to a single algorithm (e.g. ``mc_ep_len``), the
+    conditions are rendered as overlaid curves on a single axes via
+    ``plot_algorithm_comparison`` instead of a per-condition column grid.
     """
     # VI has no episode-based training curves (only delta_v convergence sweeps)
     curve_algos = [a for a in algorithms if a != "value_iteration"]
@@ -332,36 +300,162 @@ def _save_training_curve_plots(
     for grid_stem, grid_hists in all_histories.items():
         for group_name, exp_names, metrics, algo_filter in TRAINING_CURVE_GROUPS:
             group_algos = [a for a in curve_algos if algo_filter is None or a in algo_filter]
+            single_algo = len(group_algos) == 1
             for algo in group_algos:
-                # Build conditions: one entry per experiment condition, single algorithm
                 conditions: dict[str, dict] = {}
+                histories: dict[str, dict] = {}
                 for exp_name in exp_names:
                     hist = grid_hists.get(exp_name, {}).get(algo)
                     if hist is None:
                         continue
                     if any(m in hist.get("metrics", {}) for m in metrics):
                         conditions[exp_name] = {ALGO_LABELS.get(algo, algo): hist}
+                        histories[exp_name] = hist
 
                 if len(conditions) < 2:
                     continue
 
-                # Smoothing window relative to this algorithm's episode count
-                n_ep = len(next(iter(conditions.values()))[ALGO_LABELS[algo]]["episodes"])
+                n_ep = len(next(iter(histories.values()))["episodes"])
                 smoothing = max(1, n_ep // 20)
+                title = f"{group_name} — {ALGO_LABELS[algo]} ({grid_stem})"
+                out_path = group_dirs[group_name] / f"{grid_stem}_{algo}_curves.png"
 
                 try:
-                    fig, _ = plot_hyperparameter_comparison(
-                        conditions,
-                        metrics=metrics,
-                        smoothing_window=smoothing,
-                        title=f"{group_name} — {ALGO_LABELS[algo]} ({grid_stem})",
-                    )
-                    out_path = group_dirs[group_name] / f"{grid_stem}_{algo}_curves.png"
+                    if single_algo:
+                        shade_colors = dict(
+                            zip(histories, _shade_palette(algo, len(histories)))
+                        )
+                        fig, _ = plot_algorithm_comparison(
+                            histories,
+                            metrics=metrics,
+                            smoothing_window=smoothing,
+                            title=title,
+                            colors=shade_colors,
+                        )
+                    else:
+                        fig, _ = plot_hyperparameter_comparison(
+                            conditions,
+                            metrics=metrics,
+                            smoothing_window=smoothing,
+                            title=title,
+                        )
                     fig.savefig(out_path, dpi=130, bbox_inches="tight")
                     plt.close(fig)
                     tqdm.write(f"  Saved {out_path.name}")
                 except Exception as exc:
                     tqdm.write(f"  [WARN] curve plot skipped ({group_name}/{algo}/{grid_stem}): {exc}")
+
+
+# ─── Plotting: cross-algorithm overlay ───────────────────────────────────────
+
+def _save_algorithm_overlay_plots(
+    all_histories: dict[str, dict[str, dict[str, dict | None]]],
+    group_dirs: dict[str, Path],
+    algorithms: list[str],
+) -> None:
+    """For each multi-algo group, save a cross-algorithm overlay per condition.
+
+    Each PNG overlays the available algorithms (QL, MC; VI is excluded
+    because it has no per-episode metrics) on one axes per metric for a
+    single experimental condition. Algorithms keep their canonical
+    ``ALGO_COLORS`` hues so identity is readable across all overlays.
+    Single-algo groups are skipped — ``_save_training_curve_plots`` already
+    overlays their conditions on a single axes.
+    """
+    curve_algos = [a for a in algorithms if a != "value_iteration"]
+
+    for grid_stem, grid_hists in all_histories.items():
+        for group_name, exp_names, metrics, algo_filter in TRAINING_CURVE_GROUPS:
+            group_algos = [a for a in curve_algos if algo_filter is None or a in algo_filter]
+            if len(group_algos) < 2:
+                continue
+
+            for exp_name in exp_names:
+                histories: dict[str, dict] = {}
+                colors: dict[str, str] = {}
+                for algo in group_algos:
+                    hist = grid_hists.get(exp_name, {}).get(algo)
+                    if hist is None:
+                        continue
+                    if any(m in hist.get("metrics", {}) for m in metrics):
+                        label = ALGO_LABELS.get(algo, algo)
+                        histories[label] = hist
+                        colors[label] = ALGO_COLORS[algo]
+
+                if len(histories) < 2:
+                    continue
+
+                max_n_ep = max(len(h["episodes"]) for h in histories.values())
+                smoothing = max(1, max_n_ep // 20)
+                out_path = group_dirs[group_name] / f"{grid_stem}_{exp_name}_algo_overlay.png"
+
+                try:
+                    fig, _ = plot_algorithm_comparison(
+                        histories,
+                        metrics=metrics,
+                        smoothing_window=smoothing,
+                        title=f"{group_name} / {exp_name} — algorithm overlay ({grid_stem})",
+                        colors=colors,
+                    )
+                    fig.savefig(out_path, dpi=130, bbox_inches="tight")
+                    plt.close(fig)
+                    tqdm.write(f"  Saved {out_path.name}")
+                except Exception as exc:
+                    tqdm.write(
+                        f"  [WARN] algo overlay skipped ({group_name}/{exp_name}/{grid_stem}): {exc}"
+                    )
+
+
+# ─── Plotting: value + policy per (experiment, algorithm, grid) ──────────────
+
+def _save_value_policy_plots(
+    all_value_policy: dict[str, dict[str, dict[str, dict | None]]],
+    grid_paths: dict[str, Path],
+    group_dirs: dict[str, Path],
+) -> None:
+    """Save a ``plot_value_and_policy`` PNG for every (experiment, algorithm, grid).
+
+    Each PNG lands in the experiment's group folder under
+    ``{grid_stem}_{exp_name}_{algo}_value_policy.png``. Runs with empty
+    ``values`` or ``policy`` are skipped cleanly — e.g. an MC agent that
+    failed to call ``build_value_and_policy()``.
+    """
+    for grid_stem, exp_map in all_value_policy.items():
+        grid_path = grid_paths.get(grid_stem)
+        if grid_path is None or not grid_path.exists():
+            continue
+        grid_array = np.load(grid_path)
+
+        for exp_name, algo_map in exp_map.items():
+            group_name = EXP_TO_GROUP.get(exp_name)
+            if group_name is None:
+                continue
+            out_dir = group_dirs[group_name]
+
+            for algo, vp in algo_map.items():
+                if vp is None:
+                    continue
+                values = vp.get("values")
+                policy = vp.get("policy")
+                if not values or not policy:
+                    continue
+
+                out_path = out_dir / f"{grid_stem}_{exp_name}_{algo}_value_policy.png"
+                try:
+                    fig, _ = plot_value_and_policy(
+                        grid_array,
+                        values,
+                        policy,
+                        title=f"{ALGO_LABELS.get(algo, algo)} — {exp_name} ({grid_stem})",
+                        agent_start_pos=vp.get("initial_pos"),
+                    )
+                    fig.savefig(out_path, dpi=130, bbox_inches="tight")
+                    plt.close(fig)
+                    tqdm.write(f"  Saved {out_path.name}")
+                except Exception as exc:
+                    tqdm.write(
+                        f"  [WARN] value+policy plot skipped ({exp_name}/{algo}/{grid_stem}): {exc}"
+                    )
 
 
 # ─── Plotting: VI convergence curves ─────────────────────────────────────────
@@ -451,6 +545,10 @@ def main() -> None:
     all_rows: list[dict] = []
     # all_histories[grid_stem][exp_name][algo] = history_dict_or_None
     all_histories: dict[str, dict[str, dict[str, dict | None]]] = {}
+    # all_value_policy[grid_stem][exp_name][algo] = {"values", "policy", "initial_pos"} | None
+    all_value_policy: dict[str, dict[str, dict[str, dict | None]]] = {}
+    # grid_paths[grid_stem] = Path, used to load the grid array for value+policy plots
+    grid_paths: dict[str, Path] = {}
 
     try:
         with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -476,18 +574,21 @@ def main() -> None:
                         continue
 
                     g = grid_path.stem
+                    grid_paths[g] = grid_path
                     all_histories.setdefault(g, {}).setdefault(exp_name, {})
+                    all_value_policy.setdefault(g, {}).setdefault(exp_name, {})
 
                     for algorithm in algorithms:
                         pbar.set_description(f"{exp_name} / {algorithm} / {g}")
                         try:
-                            row, history = _run_one(exp_name, algorithm, grid_path, cfg)
+                            row, history, vp_payload = _run_one(exp_name, algorithm, grid_path, cfg)
                             writer.writerow(row)
                             f.flush()
                             group_writer.writerow(row)
                             group_file.flush()
                             all_rows.append(row)
                             all_histories[g][exp_name][algorithm] = history
+                            all_value_policy[g][exp_name][algorithm] = vp_payload
                         except Exception as exc:
                             tqdm.write(f"  [ERROR] {exp_name}/{algorithm}/{g}: {exc}")
                         pbar.update(1)
@@ -502,6 +603,8 @@ def main() -> None:
     else:
         print(f"\nAll runs complete. Generating plots…")
         _save_training_curve_plots(all_histories, group_dirs, algorithms)
+        _save_algorithm_overlay_plots(all_histories, group_dirs, algorithms)
+        _save_value_policy_plots(all_value_policy, grid_paths, group_dirs)
         if "value_iteration" in algorithms:
             _save_vi_convergence_plots(all_histories, group_dirs)
         print(f"\nDone. Results in {args.out_dir}/")

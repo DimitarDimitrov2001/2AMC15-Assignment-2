@@ -1,264 +1,211 @@
-"""Train and evaluate RL agents for the delivery grid world."""
+"""Unified training CLI.
+
+Usage:
+    python train.py {value_iteration|q_learning|mc|random} GRID [GRID ...] [--flags]
+
+The first positional argument selects the agent. Each agent has its own
+subparser exposing only the flags it needs. Shared flags (sigma, gamma,
+max_steps, ...) live on a parent parser used by all subcommands.
+"""
 
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
-from datetime import datetime
 from pathlib import Path
 
-from tqdm import trange
-
-from agents.q_learning_agent import QLearningAgent
-from agents.random_agent import RandomAgent
-from agents.value_iteration_agent import ValueIterationAgent
-from utils.artifacts import (
-    save_evaluation_summary_artifact,
-    save_value_iteration_artifacts,
-    write_json,
+from agents.trainers import (
+    TRAINERS,
+    TrainConfig,
+    make_artifact_prefix,
+    parse_start_pos,
+    policy_disagreement,
+    save_run_artifacts,
+    setup_grid_run,
 )
 from utils.evaluation import evaluate_policy_metrics
-from world import Environment, build_manhattan_reward_function, find_target_position
+
+
+def _build_shared_parser() -> ArgumentParser:
+    """Build the parent parser holding flags common to every agent."""
+    parent = ArgumentParser(add_help=False)
+    parent.add_argument("GRID", type=Path, nargs="+", help="Paths to one or more grid files.")
+    parent.add_argument("--no_gui", action="store_true", help="Disable rendering for faster training.")
+    parent.add_argument("--fps", type=int, default=30, help="GUI frame rate (ignored with --no_gui).")
+    parent.add_argument("--sigma", type=float, default=0.1, help="Environment stochasticity.")
+    parent.add_argument("--gamma", type=float, default=0.9, help="Discount factor.")
+    parent.add_argument("--max_steps", type=int, default=500, help="Max env steps per episode/rollout.")
+    parent.add_argument("--eval_episodes", type=int, default=20, help="Number of evaluation rollouts.")
+    parent.add_argument("--random_seed", type=int, default=0, help="Random seed for the environment.")
+    parent.add_argument("--start_pos", type=str, default=None, help="Agent start position as col,row.")
+    parent.add_argument("--out_dir", type=Path, default=Path("results"), help="Output directory for artifacts.")
+    parent.add_argument(
+        "--compare_optimal",
+        action="store_true",
+        help=(
+            "Pre-train a Value Iteration agent and use its policy as the optimality "
+            "reference: records per-episode policy disagreement (QL/MC only), emits a "
+            "spatial *_policy_diff.png heatmap, and adds the scalar to the eval summary."
+        ),
+    )
+    return parent
+
+
+def _add_alpha_epsilon_args(subparser: ArgumentParser, *, default_epsilon: float, default_epsilon_decay: float,
+                            default_alpha_decay: float, default_alpha_min: float, default_epsilon_min: float,
+                            default_alpha: float | None) -> None:
+    """Attach the shared alpha/epsilon schedule flags to a subparser."""
+    subparser.add_argument("--alpha", type=float, default=default_alpha, help="Learning rate.")
+    subparser.add_argument("--alpha_min", type=float, default=default_alpha_min, help="Minimum learning rate.")
+    subparser.add_argument("--alpha_decay", type=float, default=default_alpha_decay, help="Per-episode decay for alpha.")
+    subparser.add_argument("--fixed_alpha", action="store_true", help="Disable alpha decay.")
+    subparser.add_argument("--epsilon", type=float, default=default_epsilon, help="Initial exploration rate.")
+    subparser.add_argument("--epsilon_min", type=float, default=default_epsilon_min, help="Minimum exploration rate.")
+    subparser.add_argument("--epsilon_decay", type=float, default=default_epsilon_decay, help="Per-episode decay for epsilon.")
+    subparser.add_argument("--fixed_epsilon", action="store_true", help="Disable epsilon decay.")
 
 
 def parse_args() -> Namespace:
-    """Parse command line arguments for the training script."""
+    """Build the subparser tree and parse the CLI."""
+    shared = _build_shared_parser()
+    parser = ArgumentParser(description="Unified training entry point for RL agents.")
+    subparsers = parser.add_subparsers(dest="agent", required=True, help="Agent to train.")
 
-    parser = ArgumentParser(description="DIC Reinforcement Learning Trainer.")
-    parser.add_argument("GRID", type=Path, nargs="+", help="Paths to one or more grid files.")
-    parser.add_argument(
-        "--agent",
-        choices=("value_iteration", "random", "q_learning"),
-        default="q_learning",
-        help="Agent to train/evaluate.",
+    vi = subparsers.add_parser("value_iteration", parents=[shared], help="Train a tabular value-iteration agent.")
+    vi.add_argument("--theta", type=float, default=1e-6, help="Bellman convergence threshold.")
+    vi.add_argument("--vi_max_iter", type=int, default=1000, help="Maximum Bellman sweeps.")
+
+    ql = subparsers.add_parser("q_learning", parents=[shared], help="Train a Q-learning agent.")
+    ql.add_argument("--episodes", type=int, default=3000, help="Training episodes.")
+    _add_alpha_epsilon_args(
+        ql,
+        default_alpha=0.5,
+        default_alpha_min=0.05,
+        default_alpha_decay=0.999,
+        default_epsilon=1.0,
+        default_epsilon_min=0.05,
+        default_epsilon_decay=0.995,
     )
-    parser.add_argument("--no_gui", action="store_true", help="Disables rendering to train faster.")
-    parser.add_argument(
-        "--sigma",
-        type=float,
-        default=0.1,
-        help="Sigma value for the stochasticity of the environment.",
+
+    mc = subparsers.add_parser("mc", parents=[shared], help="Train an on-policy first-visit MC agent.")
+    mc.add_argument("--episodes", type=int, default=5000, help="Training episodes.")
+    mc.add_argument("--max_episode_length", type=int, default=2000, help="Max steps per training episode.")
+    # Matches QL's CLI defaults so MC and QL share a hyperparameter shape.
+    # Note: even at these defaults, MC on a 5000-episode budget is high
+    # variance across seeds (single-seed runs can swing 0% <-> 100% on A1).
+    # See README "MC training notes" — increase --episodes for stability.
+    _add_alpha_epsilon_args(
+        mc,
+        default_alpha=0.5,
+        default_alpha_min=0.05,
+        default_alpha_decay=0.9995,
+        default_epsilon=0.2,
+        default_epsilon_min=0.01,
+        default_epsilon_decay=0.9995,
     )
-    parser.add_argument(
-        "--fps",
-        type=int,
-        default=30,
-        help="Frames per second to render at. Only used if no_gui is not set.",
-    )
-    parser.add_argument("--iter", type=int, default=1000, help="Max environment steps for rollouts/evaluation.")
-    parser.add_argument("--episodes", type=int, default=1000, help="Number of Q-learning training episodes.")
-    parser.add_argument(
-        "--gamma",
-        type=float,
-        default=0.9,
-        help="Discount factor for value iteration and Q-learning.",
-    )
-    parser.add_argument("--theta", type=float, default=1e-6, help="Value-iteration convergence threshold.")
-    parser.add_argument("--vi_max_iter", type=int, default=1000, help="Maximum Bellman sweeps for value iteration.")
-    parser.add_argument("--alpha", type=float, default=0.5, help="Q-learning learning rate.")
-    parser.add_argument("--epsilon", type=float, default=1.0, help="Q-learning initial exploration rate.")
-    parser.add_argument("--epsilon_min", type=float, default=0.05, help="Q-learning minimum exploration rate.")
-    parser.add_argument("--epsilon_decay", type=float, default=0.995, help="Decay rate of epsilon after every episode.")
-    parser.add_argument("--alpha_min", type=float, default=0.05, help="Q-learning minimum learning rate.")
-    parser.add_argument("--alpha_decay", type=float, default=0.999, help="Decay rate of alpha after every episode.")
-    parser.add_argument("--fixed_epsilon", action="store_true", help="Use fixed epsilon instead of decaying epsilon.")
-    parser.add_argument("--fixed_alpha", action="store_true", help="Use fixed alpha instead of decaying alpha.")
-    parser.add_argument("--out_dir", type=Path, default=Path("results"), help="Directory for metrics and plots.")
-    parser.add_argument("--eval_episodes", type=int, default=20, help="Number of evaluation rollouts for metrics.")
-    parser.add_argument("--random_seed", type=int, default=0, help="Random seed value for the environment.")
-    parser.add_argument(
-        "--start_pos",
-        type=str,
-        default=None,
-        help="Agent start position as col,row (e.g. 2,3). "
-        "If not set, the GUI lets you click to place it. "
-        "In no_gui mode, defaults to random placement.",
-    )
+
+    subparsers.add_parser("random", parents=[shared], help="Evaluate a uniform-random baseline.")
+
     return parser.parse_args()
 
 
-def _uninitialized_reward_function(_grid: object, _agent_pos: tuple[int, int]) -> int:
-    raise RuntimeError("Reward function must be initialized after the environment reset.")
+def _config_from_args(args: Namespace) -> TrainConfig:
+    """Materialise a TrainConfig from the parsed CLI args.
+
+    Agent-specific fields are pulled with ``getattr`` so the same builder
+    works for every subcommand.
+    """
+    return TrainConfig(
+        sigma=args.sigma,
+        gamma=args.gamma,
+        max_steps=args.max_steps,
+        random_seed=args.random_seed,
+        eval_episodes=args.eval_episodes,
+        start_pos=parse_start_pos(args.start_pos),
+        alpha=getattr(args, "alpha", None),
+        alpha_min=getattr(args, "alpha_min", None),
+        alpha_decay=getattr(args, "alpha_decay", None),
+        epsilon=getattr(args, "epsilon", None),
+        epsilon_min=getattr(args, "epsilon_min", None),
+        epsilon_decay=getattr(args, "epsilon_decay", None),
+        fixed_alpha=getattr(args, "fixed_alpha", False),
+        fixed_epsilon=getattr(args, "fixed_epsilon", False),
+        ql_episodes=getattr(args, "episodes", None) if args.agent == "q_learning" else None,
+        mc_episodes=getattr(args, "episodes", None) if args.agent == "mc" else None,
+        max_episode_length=getattr(args, "max_episode_length", None),
+        theta=getattr(args, "theta", None),
+        vi_max_iter=getattr(args, "vi_max_iter", None),
+    )
 
 
-def _parse_start_pos(raw_start_pos: str | None) -> tuple[int, int] | None:
-    if raw_start_pos is None:
-        return None
-    parts = raw_start_pos.split(",")
-    if len(parts) != 2:
-        raise ValueError("--start_pos must be formatted as col,row")
-    return int(parts[0]), int(parts[1])
+def main() -> None:
+    """CLI entry point: dispatch to the chosen trainer per grid."""
+    args = parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    cfg = _config_from_args(args)
+    trainer = TRAINERS[args.agent]
+    # --compare_optimal is only meaningful for agents that learn a policy
+    # mid-training. VI is the reference itself; random has no policy.
+    use_reference = bool(getattr(args, "compare_optimal", False)) and args.agent in {"q_learning", "mc"}
 
-
-def train_q_learning_agent(
-    env: Environment,
-    agent: QLearningAgent,
-    episodes: int,
-    max_steps_per_episode: int,
-) -> None:
-    for _episode in trange(episodes, desc="Training Q-learning agent"):
-        state = env.reset()
-        agent.start_episode()
-
-        for _step in range(max_steps_per_episode):
-            action = agent.take_action(state)
-            next_state, reward, terminated, _info = env.step(action)
-            agent.update(next_state, reward, action, terminated=terminated)
-            state = next_state
-            if terminated:
-                break
-
-        agent.end_episode()
-
-
-def main(
-    grid_paths: list[Path],
-    agent_name: str,
-    no_gui: bool,
-    iters: int,
-    episodes: int,
-    fps: int,
-    sigma: float,
-    gamma: float,
-    theta: float,
-    vi_max_iter: int,
-    alpha: float,
-    epsilon: float,
-    epsilon_min: float,
-    epsilon_decay: float,
-    alpha_min: float,
-    alpha_decay: float,
-    fixed_epsilon: bool,
-    fixed_alpha: bool,
-    out_dir: Path,
-    eval_episodes: int,
-    random_seed: int,
-    start_pos: tuple[int, int] | None,
-) -> None:
-    """Main training and evaluation loop."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    for grid_path in grid_paths:
-        env = Environment(
-            grid_fp=grid_path,
-            no_gui=no_gui,
-            reward_fn=_uninitialized_reward_function,
-            sigma=sigma,
-            target_fps=fps,
-            agent_start_pos=start_pos,
-            random_seed=random_seed,
+    for grid_path in args.GRID:
+        env, initial_pos, reward_fn = setup_grid_run(
+            grid_path=grid_path,
+            sigma=cfg.sigma,
+            fps=args.fps,
+            no_gui=args.no_gui,
+            start_pos=cfg.start_pos,
+            random_seed=cfg.random_seed,
         )
+        run_cfg = TrainConfig(**{**cfg.__dict__, "start_pos": initial_pos})
 
-        initial_pos = env.reset()
-        env.agent_start_pos = initial_pos
-        target_pos = find_target_position(env.grid)
-        reward_fn = build_manhattan_reward_function(initial_pos, target_pos)
-        env.reward_fn = reward_fn
-        timestamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
-        artifact_prefix = f"{grid_path.stem}_{agent_name}_{timestamp}"
+        optimal_policy = None
+        if use_reference:
+            vi_agent, _ = TRAINERS["value_iteration"](env, reward_fn, run_cfg)
+            optimal_policy = vi_agent.policy
 
-        if agent_name == "value_iteration":
-            agent = ValueIterationAgent(
-                grid=env.grid,
-                reward_fn=reward_fn,
-                sigma=sigma,
-                gamma=gamma,
-                theta=theta,
-                max_iterations=vi_max_iter,
-            )
-            agent.train()
-        elif agent_name == "random":
-            agent = RandomAgent()
-            state = initial_pos
-            for _ in trange(iters, desc=f"Training random agent on {grid_path.name}"):
-                action = agent.take_action(state)
-                state, reward, terminated, info = env.step(action)
-                if terminated:
-                    break
-                agent.update(state, reward, info["actual_action"])
-        elif agent_name == "q_learning":
-            agent = QLearningAgent(
-                alpha=alpha,
-                gamma=gamma,
-                epsilon=epsilon,
-                epsilon_min=epsilon_min,
-                epsilon_decay=epsilon_decay,
-                alpha_min=alpha_min,
-                alpha_decay=alpha_decay,
-                decaying_epsilon=not fixed_epsilon,
-                decaying_alpha=not fixed_alpha,
-                n_actions=4,
-            )
-            train_q_learning_agent(
-                env=env,
-                agent=agent,
-                episodes=episodes,
-                max_steps_per_episode=iters,
-            )
-            agent.set_eval_mode()
-        else:
-            raise ValueError(f"Unsupported agent: {agent_name}")
+        agent, history = trainer(env, reward_fn, run_cfg, optimal_policy=optimal_policy)
 
-        evaluation_metrics = evaluate_policy_metrics(
+        metrics = evaluate_policy_metrics(
             grid=grid_path,
             agent=agent,
-            max_steps=iters,
-            sigma=sigma,
+            max_steps=run_cfg.max_steps,
+            sigma=run_cfg.sigma,
             agent_start_pos=initial_pos,
             reward_fn=reward_fn,
-            gamma=gamma,
-            random_seed=random_seed,
-            n_eval_episodes=eval_episodes,
+            gamma=run_cfg.gamma,
+            random_seed=run_cfg.random_seed,
+            n_eval_episodes=run_cfg.eval_episodes,
         )
 
-        if isinstance(agent, ValueIterationAgent):
-            save_value_iteration_artifacts(
-                out_dir=out_dir,
-                artifact_prefix=artifact_prefix,
-                grid=env.grid,
-                initial_pos=initial_pos,
-                agent=agent,
-                evaluation_metrics=evaluation_metrics,
-            )
-        else:
-            write_json(out_dir / f"{artifact_prefix}_metrics.json", {"evaluation": evaluation_metrics})
-        save_evaluation_summary_artifact(out_dir, artifact_prefix, evaluation_metrics)
+        policy_diff_scalar = (
+            policy_disagreement(optimal_policy, agent) if optimal_policy is not None else None
+        )
 
-        Environment.evaluate_agent(
-            grid_fp=grid_path,
+        prefix = make_artifact_prefix(grid_path, args.agent)
+        save_run_artifacts(
+            out_dir=args.out_dir,
+            artifact_prefix=prefix,
+            grid_path=grid_path,
             agent=agent,
-            max_steps=iters,
-            sigma=sigma,
-            agent_start_pos=initial_pos,
+            env_grid=env.grid,
+            initial_pos=initial_pos,
+            evaluation_metrics=metrics,
             reward_fn=reward_fn,
-            random_seed=random_seed,
-            out_dir=out_dir,
-            file_name=f"{artifact_prefix}_path",
+            cfg=run_cfg,
+            optimal_policy=optimal_policy,
+            policy_diff_scalar=policy_diff_scalar,
+            history=history,
+        )
+
+        diff_part = (
+            f"  policy_diff={policy_diff_scalar:.3f}" if policy_diff_scalar is not None else ""
+        )
+        print(
+            f"[{grid_path.stem}] success_rate={metrics['success_rate']:.3f}  "
+            f"mean_discounted_return={metrics['mean_discounted_return']:.3f}"
+            f"{diff_part}"
         )
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    main(
-        args.GRID,
-        args.agent,
-        args.no_gui,
-        args.iter,
-        args.episodes,
-        args.fps,
-        args.sigma,
-        args.gamma,
-        args.theta,
-        args.vi_max_iter,
-        args.alpha,
-        args.epsilon,
-        args.epsilon_min,
-        args.epsilon_decay,
-        args.alpha_min,
-        args.alpha_decay,
-        args.fixed_epsilon,
-        args.fixed_alpha,
-        args.out_dir,
-        args.eval_episodes,
-        args.random_seed,
-        _parse_start_pos(args.start_pos),
-    )
+    main()
