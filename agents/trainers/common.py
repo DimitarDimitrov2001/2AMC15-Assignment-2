@@ -7,15 +7,19 @@ functions in sibling modules stay pure (no I/O, no plotting, no prints).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from agents.base_agent import BaseAgent
 from agents.value_iteration_agent import ValueIterationAgent
+
+if TYPE_CHECKING:
+    from utils.training_logger import TrainingLogger
 from utils.artifacts import (
     save_evaluation_summary_artifact,
     save_policy_disagreement_artifact,
@@ -24,7 +28,7 @@ from utils.artifacts import (
     write_json,
 )
 from utils.plotting import TrainingHistory
-from world import Environment, build_manhattan_reward_function, find_target_position
+from world import Environment, build_basic_reward_function, build_manhattan_reward_function, find_target_position
 
 Position = tuple[int, int]
 RewardFunction = Callable[[np.ndarray, Position], float]
@@ -62,11 +66,74 @@ class TrainConfig:
     log_q_table: bool = False
     q_init: float = 0.0
     q_init_noise: float = 1e-6
-    exploring_starts: bool = False
-    off_policy_update: str = "weighted"
+    # exploring_starts: bool = False
+    off_policy_update: str = "alpha"
     importance_weight_clip: float | None = 10.0
+    soft_target_epsilon: float = 0.0
     theta: float | None = None
     vi_max_iter: int | None = None
+    reward_function: str = "manhattan"
+    wandb: bool = False
+    wandb_project: str = "rl-in-practice"
+
+
+# ---------------------------------------------------------------------------
+# Shared trainer helpers — deduplicated from mc / q_learning / off_policy_mc
+# ---------------------------------------------------------------------------
+
+
+def q_table_as_array(q_table: QTable) -> np.ndarray:
+    """Convert a sparse position-indexed Q-table into a 2-D array for the logger."""
+    if not q_table:
+        return np.zeros((0, 4), dtype=float)
+    return np.vstack([q_table[state] for state in sorted(q_table)])
+
+
+def build_logger(cfg: TrainConfig) -> tuple[TrainingLogger | None, int]:
+    """Create the appropriate training logger from *cfg*.
+
+    Returns ``(logger, effective_log_interval)`` so callers never need to
+    mutate *cfg* as a side-effect.  When W&B is enabled but
+    ``cfg.log_interval`` is 0, the effective interval defaults to 100.
+
+    For W&B the caller must have already called ``wandb.init()``; the
+    logger only records metrics to the active run.
+    """
+    if cfg.wandb:
+        from utils.training_logger import WandbTrainingLogger
+
+        return WandbTrainingLogger(), cfg.log_interval if cfg.log_interval > 0 else 100
+    if cfg.log_interval > 0:
+        from utils.training_logger import ConsoleTrainingLogger
+
+        return ConsoleTrainingLogger(
+            show_q_table=cfg.log_q_table, redraw_mode="scroll",
+        ), cfg.log_interval
+    return None, cfg.log_interval
+
+
+def build_episode_iter(
+    n_episodes: int, logger: TrainingLogger | None, desc: str,
+) -> Iterable[int]:
+    """Return a ``range`` (when a logger provides its own output) or a ``trange`` progress bar."""
+    if logger is not None:
+        return range(n_episodes)
+    from tqdm import trange
+
+    return trange(n_episodes, desc=desc, leave=False)
+
+
+def should_log(episode_num: int, log_interval: int, total_episodes: int) -> bool:
+    """Whether to emit a log entry for *episode_num* (1-based)."""
+    return log_interval > 0 and (
+        episode_num % log_interval == 0 or episode_num == total_episodes
+    )
+
+
+def validate_log_interval(cfg: TrainConfig) -> None:
+    """Raise if ``cfg.log_interval`` is negative."""
+    if cfg.log_interval < 0:
+        raise ValueError("TrainConfig.log_interval must be >= 0")
 
 
 def policy_disagreement_from_q_table(
@@ -122,6 +189,9 @@ def _placeholder_reward_function(_grid: np.ndarray, _agent_pos: Position) -> flo
     return 0.0
 
 
+REWARD_FUNCTIONS = ("manhattan", "basic")
+
+
 def setup_grid_run(
     grid_path: Path,
     sigma: float,
@@ -129,13 +199,22 @@ def setup_grid_run(
     no_gui: bool,
     start_pos: Position | None,
     random_seed: int,
+    reward_function: str = "manhattan",
 ) -> tuple[Environment, Position, RewardFunction]:
     """Construct the environment, choose the start position, build the reward.
 
-    The Manhattan-scaled reward function needs the agent's start position,
-    which itself depends on ``env.reset()``. This helper performs the
-    bootstrap dance once and patches the env with the final reward function.
+    ``reward_function`` selects which reward scheme to use:
+      * ``"manhattan"`` — -1 per step, -5 for walls/obstacles, target reward
+        scaled to 2 * Manhattan(start, target) (min 10).
+      * ``"basic"`` — -1 for every step (including wall bumps), +10 for
+        reaching the target (the assignment spec default).
     """
+    if reward_function not in REWARD_FUNCTIONS:
+        raise ValueError(
+            f"Unknown reward function {reward_function!r}; "
+            f"choose from {REWARD_FUNCTIONS}"
+        )
+
     env = Environment(
         grid_fp=grid_path,
         no_gui=no_gui,
@@ -147,8 +226,13 @@ def setup_grid_run(
     )
     initial_pos = env.reset()
     env.agent_start_pos = initial_pos
-    target_pos = find_target_position(env.grid)
-    reward_fn = build_manhattan_reward_function(initial_pos, target_pos)
+
+    if reward_function == "basic":
+        reward_fn = build_basic_reward_function()
+    else:
+        target_pos = find_target_position(env.grid)
+        reward_fn = build_manhattan_reward_function(initial_pos, target_pos)
+
     env.reward_fn = reward_fn
     return env, initial_pos, reward_fn
 
@@ -172,6 +256,7 @@ def save_run_artifacts(
     optimal_policy: Policy | None = None,
     policy_diff_scalar: float | None = None,
     history: TrainingHistory | None = None,
+    wandb_log: bool = False,
 ) -> None:
     """Write per-run metrics, evaluation summary, and the path visualisation.
 
@@ -191,9 +276,16 @@ def save_run_artifacts(
             initial_pos=initial_pos,
             agent=agent,
             evaluation_metrics=evaluation_metrics,
+            wandb_log=wandb_log,
         )
     else:
-        write_json(out_dir / f"{artifact_prefix}_metrics.json", {"evaluation": evaluation_metrics})
+        training_payload: dict[str, object] = {}
+        if history is not None:
+            training_payload = history.to_dict()
+        write_json(
+            out_dir / f"{artifact_prefix}_metrics.json",
+            {"training": training_payload, "evaluation": evaluation_metrics},
+        )
 
     save_evaluation_summary_artifact(
         out_dir, artifact_prefix, evaluation_metrics, policy_difference=policy_diff_scalar
@@ -211,6 +303,7 @@ def save_run_artifacts(
                 optimal_policy=optimal_policy,
                 learned_policy=learned_policy,
                 agent_start_pos=initial_pos,
+                wandb_log=wandb_log,
             )
 
     # Per-episode training curves (avg_reward, epsilon, policy_diff, ...).
@@ -221,6 +314,7 @@ def save_run_artifacts(
             out_dir=out_dir,
             artifact_prefix=artifact_prefix,
             history=history,
+            wandb_log=wandb_log,
         )
 
     Environment.evaluate_agent(

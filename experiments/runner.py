@@ -116,6 +116,7 @@ def run_one(
         no_gui=True,
         start_pos=None,
         random_seed=seed,
+        reward_function=cfg.get("reward_function", "manhattan"),
     )
     train_cfg = _train_config(cfg, start_pos)
 

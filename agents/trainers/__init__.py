@@ -20,6 +20,7 @@ from typing import Protocol
 from agents.base_agent import BaseAgent
 from agents.trainers import mc, off_policy_mc, q_learning, random_agent, value_iteration
 from agents.trainers.common import (
+    REWARD_FUNCTIONS,
     Policy,
     RewardFunction,
     TrainConfig,
@@ -57,6 +58,7 @@ TRAINERS: dict[str, TrainerFn] = {
 
 __all__ = [
     "Policy",
+    "REWARD_FUNCTIONS",
     "RewardFunction",
     "TRAINERS",
     "TrainConfig",

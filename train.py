@@ -57,6 +57,28 @@ def _build_shared_parser() -> ArgumentParser:
             "spatial *_policy_diff.png heatmap, and adds the scalar to the eval summary."
         ),
     )
+    parent.add_argument(
+        "--reward",
+        type=str,
+        choices=("manhattan", "basic"),
+        default="manhattan",
+        help=(
+            "Reward function to use. 'manhattan' scales target reward with "
+            "start-target distance and penalises wall hits at -5. 'basic' "
+            "uses the assignment spec: -1 per step, +10 for the target."
+        ),
+    )
+    parent.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging.",
+    )
+    parent.add_argument(
+        "--wandb_project",
+        type=str,
+        default="rl-in-practice",
+        help="WandB project name.",
+    )
     return parent
 
 
@@ -98,10 +120,22 @@ def parse_args() -> Namespace:
         help="Include the learned Q-table in each console log entry.",
     )
     ql.add_argument(
-        "--exploring_starts",
-        action="store_true",
-        help="Train Q-learning episodes from random empty cells; evaluation still uses the requested start.",
+        "--q_init",
+        type=float,
+        default=0.0,
+        help="Base initial Q-value for new state-action rows.",
     )
+    ql.add_argument(
+        "--q_init_noise",
+        type=float,
+        default=1e-6,
+        help="Uniform noise radius added to initial Q-values to break action ties; set 0 for exact init.",
+    )
+    # ql.add_argument(
+    #     "--exploring_starts",
+    #     action="store_true",
+    #     help="Train Q-learning episodes from random empty cells; evaluation still uses the requested start.",
+    # )
     _add_alpha_epsilon_args(
         ql,
         default_alpha=0.5,
@@ -126,10 +160,18 @@ def parse_args() -> Namespace:
         action="store_true",
         help="Include the learned MC Q-table in each console log entry.",
     )
-    # Matches QL's CLI defaults so MC and QL share a hyperparameter shape.
-    # Note: even at these defaults, MC on a 5000-episode budget is high
-    # variance across seeds (single-seed runs can swing 0% <-> 100% on A1).
-    # See README "MC training notes" — increase --episodes for stability.
+    mc.add_argument(
+        "--q_init",
+        type=float,
+        default=0.0,
+        help="Base initial Q-value for new state-action rows.",
+    )
+    mc.add_argument(
+        "--q_init_noise",
+        type=float,
+        default=1e-6,
+        help="Uniform noise radius added to initial Q-values to break action ties; set 0 for exact init.",
+    )
     _add_alpha_epsilon_args(
         mc,
         default_alpha=0.5,
@@ -188,14 +230,26 @@ def parse_args() -> Namespace:
     off_mc.add_argument(
         "--off_policy_update",
         choices=("weighted", "alpha"),
-        default="weighted",
-        help="Use textbook cumulative weighted averaging or constant-alpha importance-weighted updates.",
+        default="alpha",
+        help="Use constant-alpha importance-weighted updates or textbook cumulative weighted averaging.",
     )
     off_mc.add_argument(
         "--importance_weight_clip",
         type=_optional_float,
         default=10.0,
         help="Maximum importance weight used in alpha mode before multiplying by alpha; use None to disable.",
+    )
+    off_mc.add_argument(
+        "--soft_target_epsilon",
+        type=float,
+        default=0.0,
+        help=(
+            "Target-policy exploration rate. 0.0 (default) uses the textbook "
+            "deterministic greedy target, which breaks the backward loop at "
+            "non-greedy actions. Values > 0 make the target epsilon-soft so "
+            "the entire episode contributes to learning. Must be strictly "
+            "less than --epsilon."
+        ),
     )
     off_mc.add_argument(
         "--q_init",
@@ -209,11 +263,11 @@ def parse_args() -> Namespace:
         default=1e-6,
         help="Uniform noise radius added to initial Q-values to break action ties; set 0 for exact zero init.",
     )
-    off_mc.add_argument(
-        "--exploring_starts",
-        action="store_true",
-        help="Train off-policy MC episodes from random empty cells; evaluation still uses the requested start.",
-    )
+    # off_mc.add_argument(
+    #     "--exploring_starts",
+    #     action="store_true",
+    #     help="Train off-policy MC episodes from random empty cells; evaluation still uses the requested start.",
+    # )
     off_mc.add_argument(
         "--log_interval",
         type=int,
@@ -259,11 +313,15 @@ def _config_from_args(args: Namespace) -> TrainConfig:
         log_q_table=getattr(args, "log_q_table", False),
         q_init=getattr(args, "q_init", 0.0),
         q_init_noise=getattr(args, "q_init_noise", 1e-6),
-        exploring_starts=getattr(args, "exploring_starts", False),
-        off_policy_update=getattr(args, "off_policy_update", "weighted"),
+        # exploring_starts=getattr(args, "exploring_starts", False),
+        off_policy_update=getattr(args, "off_policy_update", "alpha"),
         importance_weight_clip=getattr(args, "importance_weight_clip", 10.0),
+        soft_target_epsilon=getattr(args, "soft_target_epsilon", 0.0),
         theta=getattr(args, "theta", None),
         vi_max_iter=getattr(args, "vi_max_iter", None),
+        reward_function=getattr(args, "reward", "manhattan"),
+        wandb=getattr(args, "wandb", False),
+        wandb_project=getattr(args, "wandb_project", "rl-in-practice"),
     )
 
 
@@ -289,8 +347,18 @@ def main() -> None:
             no_gui=args.no_gui,
             start_pos=cfg.start_pos,
             random_seed=cfg.random_seed,
+            reward_function=cfg.reward_function,
         )
         run_cfg = TrainConfig(**{**cfg.__dict__, "start_pos": initial_pos})
+
+        if run_cfg.wandb:
+            import wandb
+
+            wandb.init(
+                project=run_cfg.wandb_project,
+                config=run_cfg.__dict__,
+                reinit="finish_previous",
+            )
 
         optimal_policy = None
         if use_reference:
@@ -329,6 +397,7 @@ def main() -> None:
             optimal_policy=optimal_policy,
             policy_diff_scalar=policy_diff_scalar,
             history=history,
+            wandb_log=run_cfg.wandb,
         )
 
         diff_part = (
@@ -339,6 +408,11 @@ def main() -> None:
             f"mean_discounted_return={metrics['mean_discounted_return']:.3f}"
             f"{diff_part}"
         )
+
+        if run_cfg.wandb:
+            import wandb
+
+            wandb.finish()
 
 
 if __name__ == "__main__":
