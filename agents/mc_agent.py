@@ -53,6 +53,7 @@ class MCAgent(BaseAgent):
 
     _episode: list[tuple[tuple[int, int], int, float]]
     _rng: random.Random
+    _training: bool
 
     def __init__(
         self,
@@ -94,12 +95,18 @@ class MCAgent(BaseAgent):
 
         self.q_table = defaultdict(lambda: np.zeros(self.n_actions))
         self._episode = []
+        self._training = True
 
         self.values = {}
         self.policy = {}
 
     def take_action(self, state: tuple[int, int]) -> int:
         """Epsilon-greedy action selection with random tie-breaking on greedy ties."""
+        if not self._training:
+            if state in self.policy:
+                return self.policy[state]
+            return int(np.argmax(self.q_table[state]))
+
         if self._rng.random() < self.epsilon:
             return self._rng.randint(0, self.n_actions - 1)
         q_values = self.q_table[state]
@@ -168,3 +175,9 @@ class MCAgent(BaseAgent):
         """Populate ``self.values`` and ``self.policy`` from the trained Q-table."""
         self.values = {state: float(np.max(q_vals)) for state, q_vals in self.q_table.items()}
         self.policy = {state: int(np.argmax(q_vals)) for state, q_vals in self.q_table.items()}
+
+    def set_eval_mode(self) -> None:
+        """Switch to the learned greedy policy for fixed-policy evaluation."""
+        self.build_value_and_policy()
+        self.epsilon = 0.0
+        self._training = False

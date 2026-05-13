@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from agents.base_agent import BaseAgent
-from agents.trainers import mc, q_learning, random_agent, value_iteration
+from agents.trainers import mc, off_policy_mc, q_learning, random_agent, value_iteration
 from agents.trainers.common import (
     Policy,
     RewardFunction,
@@ -51,6 +51,7 @@ TRAINERS: dict[str, TrainerFn] = {
     "value_iteration": value_iteration.train,
     "q_learning": q_learning.train,
     "mc": mc.train,
+    "off_policy_mc": off_policy_mc.train,
     "random": random_agent.train,
 }
 
