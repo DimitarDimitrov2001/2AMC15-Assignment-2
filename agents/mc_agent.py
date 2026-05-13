@@ -47,6 +47,8 @@ class MCAgent(BaseAgent):
     alpha: float
     alpha_decay: float
     alpha_min: float
+    q_init: float
+    q_init_noise: float
     q_table: dict[tuple[int, int], np.ndarray]
     values: dict[tuple[int, int], float]
     policy: dict[tuple[int, int], int]
@@ -67,6 +69,9 @@ class MCAgent(BaseAgent):
         alpha: float = 0.1,
         alpha_decay: float = 1.0,
         alpha_min: float = 0.01,
+        # --- q-init ---
+        q_init: float = 0.0,
+        q_init_noise: float = 1e-6,
         random_seed: int | None = 0,
     ):
         super().__init__()
@@ -76,6 +81,8 @@ class MCAgent(BaseAgent):
             raise ValueError("alpha_min must be in [0, alpha]")
         if not 0.0 < alpha_decay <= 1.0:
             raise ValueError("alpha_decay must be in (0, 1]")
+        if q_init_noise < 0.0:
+            raise ValueError("q_init_noise must be >= 0")
 
         self.n_actions = n_actions
         self.gamma = gamma
@@ -88,17 +95,32 @@ class MCAgent(BaseAgent):
         self.alpha_decay = alpha_decay
         self.alpha_min = alpha_min
 
+        self.q_init = q_init
+        self.q_init_noise = q_init_noise
+
         # Local RNG instance so each agent has its own independent stream and
         # does not mutate the global random/np.random state. The environment
         # and other agents are unaffected by construction order.
         self._rng = random.Random(random_seed)
 
-        self.q_table = defaultdict(lambda: np.zeros(self.n_actions))
+        self.q_table = defaultdict(self._initial_q_values)
         self._episode = []
         self._training = True
 
         self.values = {}
         self.policy = {}
+
+    def _initial_q_values(self) -> np.ndarray:
+        """Factory for new Q-table rows, used by the ``defaultdict``."""
+        if self.q_init_noise == 0.0:
+            return np.full(self.n_actions, self.q_init, dtype=float)
+        return np.array(
+            [
+                self.q_init + self._rng.uniform(-self.q_init_noise, self.q_init_noise)
+                for _ in range(self.n_actions)
+            ],
+            dtype=float,
+        )
 
     def take_action(self, state: tuple[int, int]) -> int:
         """Epsilon-greedy action selection with random tie-breaking on greedy ties."""

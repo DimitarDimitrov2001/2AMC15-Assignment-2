@@ -8,18 +8,19 @@ and finalise an episode.
 
 from __future__ import annotations
 
-import numpy as np
-from tqdm import trange
-
 from agents.mc_agent import MCAgent
 from agents.trainers.common import (
     Policy,
     RewardFunction,
     TrainConfig,
+    build_episode_iter,
+    build_logger,
     policy_disagreement_from_q_table,
+    q_table_as_array,
+    should_log,
+    validate_log_interval,
 )
 from utils.plotting import TrainingHistory
-from utils.training_logger import ConsoleTrainingLogger
 from world import Environment
 
 _DEFAULT_MAX_EPISODE_LENGTH = 2000
@@ -29,13 +30,6 @@ _DEFAULT_ALPHA_MIN = 0.01
 _DEFAULT_ALPHA = 0.1
 _DEFAULT_EPSILON = 0.2
 _DEFAULT_EPSILON_MIN = 0.01
-
-
-def _q_table_as_array(q_table: dict[tuple[int, int], np.ndarray]) -> np.ndarray:
-    """Convert the sparse position-indexed Q-table into logger-friendly rows."""
-    if not q_table:
-        return np.zeros((0, 4), dtype=float)
-    return np.vstack([q_table[state] for state in sorted(q_table)])
 
 
 def train(
@@ -54,15 +48,12 @@ def train(
         raise ValueError("TrainConfig.mc_episodes is required for Monte Carlo")
     if cfg.start_pos is None:
         raise ValueError("TrainConfig.start_pos is required for Monte Carlo")
-    if cfg.log_interval < 0:
-        raise ValueError("TrainConfig.log_interval must be >= 0")
+    validate_log_interval(cfg)
 
     max_episode_length = (
         cfg.max_episode_length if cfg.max_episode_length is not None else _DEFAULT_MAX_EPISODE_LENGTH
     )
     epsilon_decay = 1.0 if cfg.fixed_epsilon else (cfg.epsilon_decay if cfg.epsilon_decay is not None else _DEFAULT_EPSILON_DECAY)
-    # Constant-alpha plumbing mirrors QL's pattern: ``fixed_alpha`` toggles
-    # the decay schedule, but the scalar value is always honoured.
     alpha_arg = cfg.alpha if cfg.alpha is not None else _DEFAULT_ALPHA
     alpha_decay_arg = 1.0 if cfg.fixed_alpha else (cfg.alpha_decay if cfg.alpha_decay is not None else _DEFAULT_ALPHA_DECAY)
     alpha_min_arg = cfg.alpha_min if cfg.alpha_min is not None else _DEFAULT_ALPHA_MIN
@@ -75,75 +66,74 @@ def train(
         alpha=alpha_arg,
         alpha_min=alpha_min_arg,
         alpha_decay=alpha_decay_arg,
+        q_init=cfg.q_init,
+        q_init_noise=cfg.q_init_noise,
         random_seed=cfg.random_seed,
     )
 
     episode_rewards: list[float] = []
+    episode_discounted_rewards: list[float] = []
     episode_deltas: list[float] = []
     episode_epsilons: list[float] = []
     episode_alphas: list[float] = []
     episode_policy_diffs: list[float] = []
 
-    logger = None
-    if cfg.log_interval > 0:
-        logger = ConsoleTrainingLogger(
-            show_q_table=cfg.log_q_table,
-            redraw_mode="scroll",
-        )
-
-    episode_iter = (
-        range(cfg.mc_episodes)
-        if logger is not None
-        else trange(cfg.mc_episodes, desc="MC", leave=False)
-    )
+    logger, log_interval = build_logger(cfg)
+    episode_iter = build_episode_iter(cfg.mc_episodes, logger, "MC")
 
     for episode_idx in episode_iter:
         state = env.reset(agent_start_pos=cfg.start_pos)
         env.reward_fn = reward_fn
         agent.start_episode()
+        ep_discounted_reward = 0.0
+        gamma_power = 1.0
 
         for _ in range(max_episode_length):
             action = agent.take_action(state)
             next_state, reward, terminated, _info = env.step(action)
-            # MC must record the action the policy selected, not info["actual_action"].
-            # The env's action noise is part of the transition dynamics, which
-            # are absorbed into Q(s, a) by averaging returns across rollouts.
             agent.record_step(state, action, reward)
+            ep_discounted_reward += gamma_power * reward
+            gamma_power *= cfg.gamma
             state = next_state
             if terminated:
                 break
 
         result = agent.end_episode()
         episode_rewards.append(result.total_reward)
+        episode_discounted_rewards.append(ep_discounted_reward)
         episode_deltas.append(result.delta_q)
         episode_epsilons.append(result.epsilon)
         episode_alphas.append(result.alpha)
-
-        episode_num = episode_idx + 1
-        if logger is not None and (
-            episode_num % cfg.log_interval == 0 or episode_num == cfg.mc_episodes
-        ):
-            logger.log_iteration(
-                episode=episode_num,
-                q_values=_q_table_as_array(agent.q_table),
-                q_delta=result.delta_q,
-                converged=False,
-                current_alpha=result.alpha,
-                current_epsilon=result.epsilon,
-            )
 
         if optimal_policy is not None:
             episode_policy_diffs.append(
                 policy_disagreement_from_q_table(optimal_policy, agent.q_table)
             )
 
-    if logger is not None:
-        logger.close()
+        episode_num = episode_idx + 1
+        if logger is not None and should_log(episode_num, log_interval, cfg.mc_episodes):
+            agent.build_value_and_policy()
+            logger.log_iteration(
+                episode=episode_num,
+                q_values=q_table_as_array(agent.q_table),
+                q_delta=result.delta_q,
+                converged=False,
+                current_alpha=result.alpha,
+                current_epsilon=result.epsilon,
+                policy_diff=episode_policy_diffs[-1] if optimal_policy is not None else None,
+                discounted_return=ep_discounted_reward,
+                env_grid=env.grid,
+                optimal_policy=optimal_policy,
+                agent_start_pos=cfg.start_pos,
+                agent_values=agent.values,
+                agent_policy=agent.policy,
+            )
 
     agent.set_eval_mode()
 
     metrics: dict[str, list[float]] = {
         "avg_reward": episode_rewards,
+        "discounted_return": episode_discounted_rewards,
         "delta_q": episode_deltas,
         "epsilon": episode_epsilons,
         "alpha": episode_alphas,
@@ -162,7 +152,9 @@ def train(
             "epsilon_decay": epsilon_decay,
             "sigma": cfg.sigma,
             "max_episode_length": max_episode_length,
-            "log_interval": cfg.log_interval,
+            "q_init": cfg.q_init,
+            "q_init_noise": cfg.q_init_noise,
+            "log_interval": log_interval,
             "log_q_table": cfg.log_q_table,
         },
     )

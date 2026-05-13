@@ -65,6 +65,7 @@ def save_value_iteration_artifacts(
     initial_pos: tuple[int, int],
     agent: ValueIterationAgent,
     evaluation_metrics: dict,
+    wandb_log: bool = False,
 ) -> None:
     """Save value-iteration metrics and value/policy diagnostics."""
     history_payload = agent.history.to_dict() if agent.history is not None else {}
@@ -89,6 +90,10 @@ def save_value_iteration_artifacts(
         agent_start_pos=initial_pos,
     )
     fig.savefig(out_dir / f"{artifact_prefix}_value_policy.png", dpi=130, bbox_inches="tight")
+    if wandb_log:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"Value and Policy": wandb.Image(fig)})
     plt.close(fig)
 
 
@@ -97,6 +102,7 @@ def save_training_curves_artifact(
     artifact_prefix: str,
     history: TrainingHistory,
     smoothing_window: int | None = None,
+    wandb_log: bool = False,
 ) -> None:
     """Save per-episode training curves as ``*_training_curves.png``.
 
@@ -117,6 +123,10 @@ def save_training_curves_artifact(
         title=f"Training curves - {artifact_prefix}",
     )
     fig.savefig(out_dir / f"{artifact_prefix}_training_curves.png", dpi=130, bbox_inches="tight")
+    if wandb_log:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"Training Curves": wandb.Image(fig)})
     plt.close(fig)
 
 
@@ -127,6 +137,7 @@ def save_policy_disagreement_artifact(
     optimal_policy: dict[tuple[int, int], int],
     learned_policy: dict[tuple[int, int], int],
     agent_start_pos: tuple[int, int] | None = None,
+    wandb_log: bool = False,
 ) -> None:
     """Render and save the spatial policy-disagreement heatmap as ``*_policy_diff.png``."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -138,4 +149,8 @@ def save_policy_disagreement_artifact(
         agent_start_pos=agent_start_pos,
     )
     fig.savefig(out_dir / f"{artifact_prefix}_policy_diff.png", dpi=130, bbox_inches="tight")
+    if wandb_log:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"Policy Disagreement": wandb.Image(fig)})
     plt.close(fig)

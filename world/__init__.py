@@ -10,7 +10,7 @@ from world.grid_codes import (
 )
 from world.gui import GUI
 from world.environment import Environment
-from world.rewards import build_manhattan_reward_function, find_target_position
+from world.rewards import build_basic_reward_function, build_manhattan_reward_function, find_target_position
 
 
 GRID_CONFIGS_FP = Path(__file__).parents[1].resolve() / Path("grid_configs")
@@ -26,6 +26,7 @@ __all__ = [
     "OBSTACLE_CELL",
     "START_CELL",
     "TARGET_CELL",
+    "build_basic_reward_function",
     "build_manhattan_reward_function",
     "find_target_position",
 ]

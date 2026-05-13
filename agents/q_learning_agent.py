@@ -30,12 +30,15 @@ class QLearningAgent(BaseAgent):
     decaying_epsilon: bool
     decaying_alpha: bool
     n_actions: int
+    q_init: float
+    q_init_noise: float
     training: bool
     q_table: dict[tuple[int, int], np.ndarray]
     values: dict[tuple[int, int], float]
     policy: dict[tuple[int, int], int]
 
     _last_state: tuple[int, int] | None
+    _rng: random.Random
 
     def __init__(
         self,
@@ -49,8 +52,13 @@ class QLearningAgent(BaseAgent):
         decaying_epsilon: bool = True,
         decaying_alpha: bool = True,
         n_actions: int = 4,
+        q_init: float = 0.0,
+        q_init_noise: float = 1e-6,
+        random_seed: int = 0,
     ):
         super().__init__()
+        if q_init_noise < 0.0:
+            raise ValueError("q_init_noise must be >= 0")
 
         self.alpha = alpha
         self.gamma = gamma
@@ -62,15 +70,30 @@ class QLearningAgent(BaseAgent):
         self.decaying_epsilon = decaying_epsilon
         self.decaying_alpha = decaying_alpha
         self.n_actions = n_actions
+        self.q_init = q_init
+        self.q_init_noise = q_init_noise
 
         self.training = True
+        self._rng = random.Random(random_seed)
 
-        self.q_table = defaultdict(lambda: np.zeros(self.n_actions, dtype=float))
+        self.q_table = defaultdict(self._initial_q_values)
 
         self.values = {}
         self.policy = {}
 
         self._last_state = None
+
+    def _initial_q_values(self) -> np.ndarray:
+        """Factory for new Q-table rows, used by the ``defaultdict``."""
+        if self.q_init_noise == 0.0:
+            return np.full(self.n_actions, self.q_init, dtype=float)
+        return np.array(
+            [
+                self.q_init + self._rng.uniform(-self.q_init_noise, self.q_init_noise)
+                for _ in range(self.n_actions)
+            ],
+            dtype=float,
+        )
 
     def start_episode(self) -> None:
         # Reset memory at the start of each episode
