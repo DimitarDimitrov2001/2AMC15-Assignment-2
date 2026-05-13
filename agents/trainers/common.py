@@ -58,6 +58,13 @@ class TrainConfig:
     ql_episodes: int | None = None
     mc_episodes: int | None = None
     max_episode_length: int | None = None
+    log_interval: int = 0
+    log_q_table: bool = False
+    q_init: float = 0.0
+    q_init_noise: float = 1e-6
+    exploring_starts: bool = False
+    off_policy_update: str = "weighted"
+    importance_weight_clip: float | None = 10.0
     theta: float | None = None
     vi_max_iter: int | None = None
 

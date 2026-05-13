@@ -1,7 +1,7 @@
 """Unified training CLI.
 
 Usage:
-    python train.py {value_iteration|q_learning|mc|random} GRID [GRID ...] [--flags]
+    python train.py {value_iteration|q_learning|mc|off_policy_mc|random} GRID [GRID ...] [--flags]
 
 The first positional argument selects the agent. Each agent has its own
 subparser exposing only the flags it needs. Shared flags (sigma, gamma,
@@ -10,7 +10,7 @@ max_steps, ...) live on a parent parser used by all subcommands.
 
 from __future__ import annotations
 
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser, ArgumentTypeError, Namespace
 from pathlib import Path
 
 from agents.trainers import (
@@ -23,6 +23,16 @@ from agents.trainers import (
     setup_grid_run,
 )
 from utils.evaluation import evaluate_policy_metrics
+
+
+def _optional_float(raw: str) -> float | None:
+    """Parse a float CLI value, accepting 'none' to disable the setting."""
+    if raw.lower() in {"none", "null"}:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ArgumentTypeError(f"expected a float or None, got {raw!r}") from exc
 
 
 def _build_shared_parser() -> ArgumentParser:
@@ -43,7 +53,7 @@ def _build_shared_parser() -> ArgumentParser:
         action="store_true",
         help=(
             "Pre-train a Value Iteration agent and use its policy as the optimality "
-            "reference: records per-episode policy disagreement (QL/MC only), emits a "
+            "reference: records per-episode policy disagreement (QL/MC agents only), emits a "
             "spatial *_policy_diff.png heatmap, and adds the scalar to the eval summary."
         ),
     )
@@ -76,6 +86,22 @@ def parse_args() -> Namespace:
 
     ql = subparsers.add_parser("q_learning", parents=[shared], help="Train a Q-learning agent.")
     ql.add_argument("--episodes", type=int, default=3000, help="Training episodes.")
+    ql.add_argument(
+        "--log_interval",
+        type=int,
+        default=0,
+        help="Print Q-learning training progress every N episodes; 0 disables console logging.",
+    )
+    ql.add_argument(
+        "--log_q_table",
+        action="store_true",
+        help="Include the learned Q-table in each console log entry.",
+    )
+    ql.add_argument(
+        "--exploring_starts",
+        action="store_true",
+        help="Train Q-learning episodes from random empty cells; evaluation still uses the requested start.",
+    )
     _add_alpha_epsilon_args(
         ql,
         default_alpha=0.5,
@@ -89,6 +115,17 @@ def parse_args() -> Namespace:
     mc = subparsers.add_parser("mc", parents=[shared], help="Train an on-policy first-visit MC agent.")
     mc.add_argument("--episodes", type=int, default=5000, help="Training episodes.")
     mc.add_argument("--max_episode_length", type=int, default=2000, help="Max steps per training episode.")
+    mc.add_argument(
+        "--log_interval",
+        type=int,
+        default=0,
+        help="Print MC training progress every N episodes; 0 disables console logging.",
+    )
+    mc.add_argument(
+        "--log_q_table",
+        action="store_true",
+        help="Include the learned MC Q-table in each console log entry.",
+    )
     # Matches QL's CLI defaults so MC and QL share a hyperparameter shape.
     # Note: even at these defaults, MC on a 5000-episode budget is high
     # variance across seeds (single-seed runs can swing 0% <-> 100% on A1).
@@ -101,6 +138,92 @@ def parse_args() -> Namespace:
         default_epsilon=0.2,
         default_epsilon_min=0.01,
         default_epsilon_decay=0.9995,
+    )
+
+    off_mc = subparsers.add_parser(
+        "off_policy_mc",
+        parents=[shared],
+        help="Train an off-policy weighted-importance-sampling MC control agent.",
+    )
+    off_mc.add_argument("--episodes", type=int, default=5000, help="Training episodes.")
+    off_mc.add_argument("--max_episode_length", type=int, default=2000, help="Max steps per training episode.")
+    off_mc.add_argument(
+        "--epsilon",
+        type=float,
+        default=0.3,
+        help="Initial behaviour-policy exploration rate.",
+    )
+    off_mc.add_argument(
+        "--epsilon_min",
+        type=float,
+        default=0.02,
+        help="Minimum behaviour-policy exploration rate.",
+    )
+    off_mc.add_argument(
+        "--epsilon_decay",
+        type=float,
+        default=0.9998,
+        help="Per-episode decay for behaviour-policy epsilon.",
+    )
+    off_mc.add_argument("--fixed_epsilon", action="store_true", help="Disable epsilon decay.")
+    off_mc.add_argument(
+        "--alpha",
+        type=float,
+        default=0.2,
+        help="Learning rate for --off_policy_update alpha.",
+    )
+    off_mc.add_argument(
+        "--alpha_min",
+        type=float,
+        default=0.02,
+        help="Minimum learning rate for --off_policy_update alpha.",
+    )
+    off_mc.add_argument(
+        "--alpha_decay",
+        type=float,
+        default=0.9998,
+        help="Per-episode decay for alpha.",
+    )
+    off_mc.add_argument("--fixed_alpha", action="store_true", help="Disable alpha decay.")
+    off_mc.add_argument(
+        "--off_policy_update",
+        choices=("weighted", "alpha"),
+        default="weighted",
+        help="Use textbook cumulative weighted averaging or constant-alpha importance-weighted updates.",
+    )
+    off_mc.add_argument(
+        "--importance_weight_clip",
+        type=_optional_float,
+        default=10.0,
+        help="Maximum importance weight used in alpha mode before multiplying by alpha; use None to disable.",
+    )
+    off_mc.add_argument(
+        "--q_init",
+        type=float,
+        default=0.0,
+        help="Base initial Q-value for new state-action rows.",
+    )
+    off_mc.add_argument(
+        "--q_init_noise",
+        type=float,
+        default=1e-6,
+        help="Uniform noise radius added to initial Q-values to break action ties; set 0 for exact zero init.",
+    )
+    off_mc.add_argument(
+        "--exploring_starts",
+        action="store_true",
+        help="Train off-policy MC episodes from random empty cells; evaluation still uses the requested start.",
+    )
+    off_mc.add_argument(
+        "--log_interval",
+        type=int,
+        default=0,
+        help="Print off-policy MC training progress every N episodes; 0 disables console logging.",
+    )
+    off_mc.add_argument(
+        "--log_q_table",
+        action="store_true",
+        help="Include the learned Q-table in each console log entry.",
     )
 
     subparsers.add_parser("random", parents=[shared], help="Evaluate a uniform-random baseline.")
@@ -130,8 +253,15 @@ def _config_from_args(args: Namespace) -> TrainConfig:
         fixed_alpha=getattr(args, "fixed_alpha", False),
         fixed_epsilon=getattr(args, "fixed_epsilon", False),
         ql_episodes=getattr(args, "episodes", None) if args.agent == "q_learning" else None,
-        mc_episodes=getattr(args, "episodes", None) if args.agent == "mc" else None,
+        mc_episodes=getattr(args, "episodes", None) if args.agent in {"mc", "off_policy_mc"} else None,
         max_episode_length=getattr(args, "max_episode_length", None),
+        log_interval=getattr(args, "log_interval", 0),
+        log_q_table=getattr(args, "log_q_table", False),
+        q_init=getattr(args, "q_init", 0.0),
+        q_init_noise=getattr(args, "q_init_noise", 1e-6),
+        exploring_starts=getattr(args, "exploring_starts", False),
+        off_policy_update=getattr(args, "off_policy_update", "weighted"),
+        importance_weight_clip=getattr(args, "importance_weight_clip", 10.0),
         theta=getattr(args, "theta", None),
         vi_max_iter=getattr(args, "vi_max_iter", None),
     )
@@ -145,7 +275,11 @@ def main() -> None:
     trainer = TRAINERS[args.agent]
     # --compare_optimal is only meaningful for agents that learn a policy
     # mid-training. VI is the reference itself; random has no policy.
-    use_reference = bool(getattr(args, "compare_optimal", False)) and args.agent in {"q_learning", "mc"}
+    use_reference = bool(getattr(args, "compare_optimal", False)) and args.agent in {
+        "q_learning",
+        "mc",
+        "off_policy_mc",
+    }
 
     for grid_path in args.GRID:
         env, initial_pos, reward_fn = setup_grid_run(
