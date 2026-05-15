@@ -259,6 +259,31 @@ class ValueIterationAgent(BaseAgent):
             policy[state] = max(action_values, key=action_values.get)
         return policy
 
+    def optimal_action_sets(self, tol: float | None = None) -> dict[Position, frozenset[int]]:
+        """Per-state set of (approximately) optimal actions.
+
+        Two actions are considered tied when their Q-values differ by no
+        more than ``tol``. Default ``tol = 10 * self.theta`` absorbs VI's
+        Bellman-residual convergence error while staying tight enough to
+        keep genuinely different actions (with Q-gaps on the order of
+        ``gamma^d`` for path-length differences ``d``) separated.
+        """
+        if tol is None:
+            tol = 100* self.theta
+        result: dict[Position, frozenset[int]] = {}
+        for state in self.states:
+            if state in self.target_states:
+                continue
+            action_values = {
+                action: self.action_value(state, action, self.values)
+                for action in ACTIONS_TO_DIRECTIONS
+            }
+            v_max = max(action_values.values())
+            result[state] = frozenset(
+                action for action, value in action_values.items() if v_max - value <= tol
+            )
+        return result
+
     def take_action(self, state: Position) -> int:
         """Return the greedy action from the trained policy."""
         if not self.policy:

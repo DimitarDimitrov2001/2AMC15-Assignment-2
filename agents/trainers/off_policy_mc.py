@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-import random
-
-import numpy as np
-from tqdm import trange
-
+from agents.learning_rates import build_lr_schedule
 from agents.off_policy_mc_agent import OffPolicyMCAgent
 from agents.trainers.common import (
-    Policy,
+    OptimalActionSets,
     RewardFunction,
     TrainConfig,
+    build_episode_iter,
+    build_episode_start_picker,
+    build_logger,
+    mean_tail,
     policy_disagreement_from_q_table,
+    q_table_as_array,
+    restore_eval_start,
+    should_log,
+    validate_log_interval,
 )
 from utils.plotting import TrainingHistory
-from utils.training_logger import ConsoleTrainingLogger
 from world import Environment
-from world.grid_codes import EMPTY_CELL
 
 _DEFAULT_MAX_EPISODE_LENGTH = 2000
 _DEFAULT_EPSILON = 0.3
@@ -28,35 +30,23 @@ _DEFAULT_ALPHA_MIN = 0.02
 _DEFAULT_ALPHA_DECAY = 0.9998
 
 
-def _q_table_as_array(q_table: dict[tuple[int, int], np.ndarray]) -> np.ndarray:
-    """Convert the sparse position-indexed Q-table into logger-friendly rows."""
-    if not q_table:
-        return np.zeros((0, 4), dtype=float)
-    return np.vstack([q_table[state] for state in sorted(q_table)])
-
-
-def _empty_positions(grid: np.ndarray) -> list[tuple[int, int]]:
-    """Return empty cells that can be used as training starts."""
-    cols, rows = np.where(grid == EMPTY_CELL)
-    return [(int(col), int(row)) for col, row in zip(cols, rows, strict=True)]
-
-
 def train(
     env: Environment,
     reward_fn: RewardFunction,
     cfg: TrainConfig,
     *,
-    optimal_policy: Policy | None = None,
+    optimal_policy: OptimalActionSets | None = None,
 ) -> tuple[OffPolicyMCAgent, TrainingHistory]:
     """Train weighted-importance-sampling off-policy MC control."""
     if cfg.mc_episodes is None:
         raise ValueError("TrainConfig.mc_episodes is required for off-policy Monte Carlo")
     if cfg.start_pos is None:
         raise ValueError("TrainConfig.start_pos is required for off-policy Monte Carlo")
-    if cfg.log_interval < 0:
-        raise ValueError("TrainConfig.log_interval must be >= 0")
+    validate_log_interval(cfg)
     if cfg.off_policy_update not in {"weighted", "alpha"}:
         raise ValueError("TrainConfig.off_policy_update must be 'weighted' or 'alpha'")
+
+    pick_episode_start = build_episode_start_picker(env, cfg)
 
     max_episode_length = (
         cfg.max_episode_length if cfg.max_episode_length is not None else _DEFAULT_MAX_EPISODE_LENGTH
@@ -64,8 +54,16 @@ def train(
     epsilon_decay = 1.0 if cfg.fixed_epsilon else (
         cfg.epsilon_decay if cfg.epsilon_decay is not None else _DEFAULT_EPSILON_DECAY
     )
-    alpha_decay = 1.0 if cfg.fixed_alpha else (
-        cfg.alpha_decay if cfg.alpha_decay is not None else _DEFAULT_ALPHA_DECAY
+    alpha_arg = cfg.alpha if cfg.alpha is not None else _DEFAULT_ALPHA
+    alpha_decay_arg = cfg.alpha_decay if cfg.alpha_decay is not None else _DEFAULT_ALPHA_DECAY
+    alpha_min_arg = cfg.alpha_min if cfg.alpha_min is not None else _DEFAULT_ALPHA_MIN
+
+    lr_schedule = build_lr_schedule(
+        cfg.lr_schedule,
+        alpha=alpha_arg,
+        alpha_decay=alpha_decay_arg,
+        alpha_min=alpha_min_arg,
+        visit_count_c=cfg.visit_count_c,
     )
 
     agent = OffPolicyMCAgent(
@@ -73,103 +71,111 @@ def train(
         epsilon=cfg.epsilon if cfg.epsilon is not None else _DEFAULT_EPSILON,
         epsilon_min=cfg.epsilon_min if cfg.epsilon_min is not None else _DEFAULT_EPSILON_MIN,
         epsilon_decay=epsilon_decay,
-        alpha=cfg.alpha if cfg.alpha is not None else _DEFAULT_ALPHA,
-        alpha_min=cfg.alpha_min if cfg.alpha_min is not None else _DEFAULT_ALPHA_MIN,
-        alpha_decay=alpha_decay,
-        decaying_alpha=not cfg.fixed_alpha,
+        target_epsilon=cfg.soft_target_epsilon,
         q_init=cfg.q_init,
         q_init_noise=cfg.q_init_noise,
         update_mode=cfg.off_policy_update,
         importance_weight_clip=cfg.importance_weight_clip,
         random_seed=cfg.random_seed,
+        lr_schedule=lr_schedule,
     )
-    training_start_positions = _empty_positions(env.grid) if cfg.exploring_starts else []
-    if cfg.exploring_starts and not training_start_positions:
-        raise ValueError("No empty cells available for exploring starts")
-    start_rng = random.Random(cfg.random_seed + 1)
 
-    episode_rewards: list[float] = []
+    episode_discounted_rewards: list[float] = []
     episode_deltas: list[float] = []
     episode_epsilons: list[float] = []
     episode_alphas: list[float] = []
+    episode_alpha_mins: list[float] = []
+    episode_alpha_maxs: list[float] = []
     episode_importance_weights: list[float] = []
     episode_policy_diffs: list[float] = []
 
-    logger = None
-    if cfg.log_interval > 0:
-        logger = ConsoleTrainingLogger(
-            show_q_table=cfg.log_q_table,
-            redraw_mode="scroll",
-        )
+    schedule_has_global_rate = lr_schedule.get_global_rate() is not None
 
-    episode_iter = (
-        range(cfg.mc_episodes)
-        if logger is not None
-        else trange(cfg.mc_episodes, desc="Off-policy MC", leave=False)
-    )
+    logger, log_interval = build_logger(cfg, cfg.mc_episodes)
+    episode_iter = build_episode_iter(cfg.mc_episodes, logger, "Off-policy MC")
 
     for episode_idx in episode_iter:
-        episode_start = (
-            start_rng.choice(training_start_positions)
-            if cfg.exploring_starts
-            else cfg.start_pos
-        )
-        state = env.reset(agent_start_pos=episode_start)
+        state = env.reset(agent_start_pos=pick_episode_start())
         env.reward_fn = reward_fn
         agent.start_episode()
+        ep_discounted_reward = 0.0
+        gamma_power = 1.0
 
         for _ in range(max_episode_length):
             action = agent.take_action(state)
             next_state, reward, terminated, _info = env.step(action)
             agent.record_step(state, action, reward)
+            ep_discounted_reward += gamma_power * reward
+            gamma_power *= cfg.gamma
             state = next_state
             if terminated:
                 break
 
         result = agent.end_episode()
-        episode_rewards.append(result.total_reward)
+        episode_discounted_rewards.append(ep_discounted_reward)
         episode_deltas.append(result.delta_q)
         episode_epsilons.append(result.epsilon)
         if result.alpha is not None:
             episode_alphas.append(result.alpha)
+        if not schedule_has_global_rate:
+            if result.alpha_min is not None:
+                episode_alpha_mins.append(result.alpha_min)
+            if result.alpha_max is not None:
+                episode_alpha_maxs.append(result.alpha_max)
         episode_importance_weights.append(result.importance_weight)
-
-        episode_num = episode_idx + 1
-        if logger is not None and (
-            episode_num % cfg.log_interval == 0 or episode_num == cfg.mc_episodes
-        ):
-            logger.log_iteration(
-                episode=episode_num,
-                q_values=_q_table_as_array(agent.q_table),
-                q_delta=result.delta_q,
-                converged=False,
-                current_alpha=result.alpha,
-                current_epsilon=result.epsilon,
-            )
 
         if optimal_policy is not None:
             episode_policy_diffs.append(
                 policy_disagreement_from_q_table(optimal_policy, agent.q_table)
             )
 
-    if logger is not None:
-        logger.close()
+        episode_num = episode_idx + 1
+        if logger is not None and should_log(episode_num, log_interval, cfg.mc_episodes):
+            agent.build_value_and_policy()
+            mean_discounted = mean_tail(episode_discounted_rewards, log_interval)
+            mean_delta = mean_tail(episode_deltas, log_interval)
+            mean_pdiff = (
+                mean_tail(episode_policy_diffs, log_interval)
+                if optimal_policy is not None
+                else None
+            )
+            logger.log_iteration(
+                episode=episode_num,
+                q_values=q_table_as_array(agent.q_table),
+                q_delta=result.delta_q,
+                mean_q_delta=mean_delta,
+                converged=False,
+                current_alpha=result.alpha,
+                current_epsilon=result.epsilon,
+                policy_diff=mean_pdiff,
+                discounted_return=mean_discounted,
+                env_grid=env.grid,
+                optimal_policy=optimal_policy,
+                agent_start_pos=cfg.start_pos,
+                agent_values=agent.values,
+                agent_policy=agent.policy,
+            )
 
+    restore_eval_start(env, cfg)
     agent.build_value_and_policy()
 
     metrics: dict[str, list[float]] = {
-        "avg_reward": episode_rewards,
+        "discounted_return": episode_discounted_rewards,
         "delta_q": episode_deltas,
         "epsilon": episode_epsilons,
         "importance_weight": episode_importance_weights,
     }
     if episode_alphas:
         metrics["alpha"] = episode_alphas
+    if episode_alpha_mins:
+        metrics["alpha_min"] = episode_alpha_mins
+    if episode_alpha_maxs:
+        metrics["alpha_max"] = episode_alpha_maxs
     if optimal_policy is not None:
         metrics["policy_diff"] = episode_policy_diffs
 
     history = TrainingHistory(
-        episodes=list(range(1, len(episode_rewards) + 1)),
+        episodes=list(range(1, len(episode_discounted_rewards) + 1)),
         metrics=metrics,
         hyperparams={
             "algorithm": "off_policy_mc",
@@ -177,16 +183,15 @@ def train(
             "epsilon": cfg.epsilon,
             "epsilon_decay": epsilon_decay,
             "epsilon_min": cfg.epsilon_min,
-            "alpha": cfg.alpha,
-            "alpha_decay": alpha_decay,
-            "alpha_min": cfg.alpha_min,
+            "lr_schedule": lr_schedule.describe(),
             "q_init": cfg.q_init,
             "q_init_noise": cfg.q_init_noise,
             "off_policy_update": cfg.off_policy_update,
             "importance_weight_clip": cfg.importance_weight_clip,
+            "soft_target_epsilon": cfg.soft_target_epsilon,
             "sigma": cfg.sigma,
             "max_episode_length": max_episode_length,
-            "log_interval": cfg.log_interval,
+            "log_interval": log_interval,
             "log_q_table": cfg.log_q_table,
             "exploring_starts": cfg.exploring_starts,
         },

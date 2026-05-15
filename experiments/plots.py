@@ -122,7 +122,7 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
         key = (result.row["setup_group"], result.row["condition"], result.row["grid"])
         grouped[key][ALGO_LABELS[result.row["algorithm"]]] = result.history
 
-    desired = ["avg_reward", "delta_q", "epsilon", "alpha", "policy_diff"]
+    desired = ["discounted_return", "delta_q", "epsilon", "alpha", "policy_diff"]
     for (group, condition, grid), histories in grouped.items():
         if not histories:
             continue

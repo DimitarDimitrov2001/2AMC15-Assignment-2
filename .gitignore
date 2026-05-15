@@ -238,3 +238,12 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# wandb
+wandb
+
+# pr-ready skill marker
+.pr-ready.json
+
+# macOS
+.DS_Store

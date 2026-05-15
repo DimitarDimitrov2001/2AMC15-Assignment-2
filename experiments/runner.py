@@ -53,7 +53,8 @@ def _train_config(cfg: dict[str, Any], start_pos: tuple[int, int]) -> TrainConfi
         alpha=cfg["alpha"],
         alpha_min=cfg["alpha_min"],
         alpha_decay=cfg["alpha_decay"],
-        fixed_alpha=cfg["fixed_alpha"],
+        lr_schedule=cfg["lr_schedule"],
+        visit_count_c=cfg["visit_count_c"],
         epsilon=cfg["epsilon"],
         epsilon_min=cfg["epsilon_min"],
         epsilon_decay=cfg["epsilon_decay"],
@@ -116,13 +117,14 @@ def run_one(
         no_gui=True,
         start_pos=None,
         random_seed=seed,
+        reward_function=cfg.get("reward_function", "manhattan"),
     )
     train_cfg = _train_config(cfg, start_pos)
 
     optimal_policy = None
     if algorithm != "value_iteration":
         vi_agent = _get_vi_reference(case.grid_path, cfg, start_pos, reward_fn, env)
-        optimal_policy = vi_agent.policy
+        optimal_policy = vi_agent.optimal_action_sets()
 
     t0 = time.perf_counter()
     agent, history = TRAINERS[algorithm](
@@ -159,7 +161,8 @@ def run_one(
         "alpha": cfg["alpha"],
         "alpha_min": cfg["alpha_min"],
         "alpha_decay": cfg["alpha_decay"],
-        "fixed_alpha": cfg["fixed_alpha"],
+        "lr_schedule": cfg["lr_schedule"],
+        "visit_count_c": cfg["visit_count_c"],
         "epsilon": cfg["epsilon"],
         "epsilon_min": cfg["epsilon_min"],
         "epsilon_decay": cfg["epsilon_decay"],

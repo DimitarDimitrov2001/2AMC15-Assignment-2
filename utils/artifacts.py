@@ -65,6 +65,7 @@ def save_value_iteration_artifacts(
     initial_pos: tuple[int, int],
     agent: ValueIterationAgent,
     evaluation_metrics: dict,
+    wandb_log: bool = False,
 ) -> None:
     """Save value-iteration metrics and value/policy diagnostics."""
     history_payload = agent.history.to_dict() if agent.history is not None else {}
@@ -89,6 +90,10 @@ def save_value_iteration_artifacts(
         agent_start_pos=initial_pos,
     )
     fig.savefig(out_dir / f"{artifact_prefix}_value_policy.png", dpi=130, bbox_inches="tight")
+    if wandb_log:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"Value and Policy": wandb.Image(fig)})
     plt.close(fig)
 
 
@@ -97,12 +102,15 @@ def save_training_curves_artifact(
     artifact_prefix: str,
     history: TrainingHistory,
     smoothing_window: int | None = None,
+    wandb_log: bool = False,
+    suffix: str = "training_curves",
+    title: str | None = None,
 ) -> None:
     """Save per-episode training curves as ``*_training_curves.png``.
 
     Plots every metric present in ``history.metrics``, so when the
     trainer was given an ``optimal_policy`` reference the resulting
-    figure includes a ``policy_diff`` subplot alongside ``avg_reward``,
+    figure includes a ``policy_diff`` subplot alongside ``discounted_return``,
     ``epsilon``, etc. Smoothing defaults to ``max(1, n_episodes // 20)``
     — same heuristic the sweep uses.
     """
@@ -111,12 +119,17 @@ def save_training_curves_artifact(
     if n_episodes == 0:
         return
     window = smoothing_window if smoothing_window is not None else max(1, n_episodes // 20)
+    fig_title = title if title is not None else f"Training curves - {artifact_prefix}"
     fig, _, _ = plot_training_history(
         history,
         smoothing_window=window,
-        title=f"Training curves - {artifact_prefix}",
+        title=fig_title,
     )
-    fig.savefig(out_dir / f"{artifact_prefix}_training_curves.png", dpi=130, bbox_inches="tight")
+    fig.savefig(out_dir / f"{artifact_prefix}_{suffix}.png", dpi=130, bbox_inches="tight")
+    if wandb_log:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({fig_title: wandb.Image(fig)})
     plt.close(fig)
 
 
@@ -124,9 +137,10 @@ def save_policy_disagreement_artifact(
     out_dir: Path,
     artifact_prefix: str,
     grid,
-    optimal_policy: dict[tuple[int, int], int],
+    optimal_policy: dict[tuple[int, int], frozenset[int]],
     learned_policy: dict[tuple[int, int], int],
     agent_start_pos: tuple[int, int] | None = None,
+    wandb_log: bool = False,
 ) -> None:
     """Render and save the spatial policy-disagreement heatmap as ``*_policy_diff.png``."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -138,4 +152,8 @@ def save_policy_disagreement_artifact(
         agent_start_pos=agent_start_pos,
     )
     fig.savefig(out_dir / f"{artifact_prefix}_policy_diff.png", dpi=130, bbox_inches="tight")
+    if wandb_log:
+        import wandb
+        if wandb.run is not None:
+            wandb.log({"Policy Disagreement": wandb.Image(fig)})
     plt.close(fig)
