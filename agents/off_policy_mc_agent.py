@@ -50,10 +50,13 @@ class OffPolicyMCAgent(BaseAgent):
 
     When ``target_epsilon`` is 0.0 (default), the target policy is
     deterministic greedy and the backward loop breaks at the first
-    non-greedy action -- standard textbook behaviour.  When
+    non-greedy action -- standard textbook behaviour. When
     ``target_epsilon > 0``, the target policy is epsilon-soft so
-    ``pi(a|s) > 0`` for all actions and the entire episode contributes
-    to learning, dramatically increasing the effective tail length.
+    ``pi(a|s) > 0`` for all actions, which keeps the importance ratio
+    finite past the first non-greedy action. Empirically on this
+    grid-world setup the soft-target variant has not outperformed the
+    textbook deterministic target, so it is exposed as an option but
+    not the default.
     """
 
     n_actions: int

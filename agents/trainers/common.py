@@ -7,6 +7,7 @@ functions in sibling modules stay pure (no I/O, no plotting, no prints).
 
 from __future__ import annotations
 
+import random
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,6 +30,7 @@ from utils.artifacts import (
 )
 from utils.plotting import TrainingHistory
 from world import Environment, build_basic_reward_function, build_manhattan_reward_function, find_target_position
+from world.grid_codes import EMPTY_CELL
 
 Position = tuple[int, int]
 RewardFunction = Callable[[np.ndarray, Position], float]
@@ -71,7 +73,7 @@ class TrainConfig:
     log_q_table: bool = False
     q_init: float = 0.0
     q_init_noise: float = 1e-6
-    # exploring_starts: bool = False
+    exploring_starts: bool = False
     off_policy_update: str = "alpha"
     importance_weight_clip: float | None = 10.0
     soft_target_epsilon: float = 0.0
@@ -217,6 +219,52 @@ def policy_disagreement(optimal_policy: OptimalActionSets, agent: BaseAgent) -> 
         if learned_policy.get(state, 0) not in optimal_actions
     )
     return mismatches / len(optimal_policy)
+
+
+def _empty_positions(grid: np.ndarray) -> list[Position]:
+    """Return every empty cell as a list of ``(col, row)`` tuples."""
+    cols, rows = np.where(grid == EMPTY_CELL)
+    return [(int(col), int(row)) for col, row in zip(cols, rows, strict=True)]
+
+
+def build_episode_start_picker(env: Environment, cfg: TrainConfig) -> Callable[[], Position | None]:
+    """Return a 0-arg callable that yields the next training-episode start.
+
+    Encapsulates Sutton & Barto §5.4 exploring starts in one place so every
+    tabular trainer (QL, on-policy MC, off-policy MC) handles it identically.
+
+    * If ``cfg.exploring_starts`` is False, the callable always returns
+      ``cfg.start_pos`` (the existing fixed-start behaviour).
+    * If ``cfg.exploring_starts`` is True, the callable samples a uniformly
+      random empty cell on every call. The RNG is seeded from
+      ``cfg.random_seed + 1`` so the start sampling is deterministic per
+      run yet does not collide with the env's action-stochasticity rolls
+      that use ``cfg.random_seed``.
+
+    Trainers must call :func:`restore_eval_start` after the training loop
+    so subsequent evaluation rollouts begin from ``cfg.start_pos``. Adding
+    a richer sampling strategy later (curriculum, distance-biased, ...) is
+    a one-place change inside this function — trainers stay unchanged.
+    """
+    if not cfg.exploring_starts:
+        return lambda: cfg.start_pos
+    starts = _empty_positions(env.grid)
+    if not starts:
+        raise ValueError("No empty cells available for exploring starts")
+    rng = random.Random(cfg.random_seed + 1)
+    return lambda: rng.choice(starts)
+
+
+def restore_eval_start(env: Environment, cfg: TrainConfig) -> None:
+    """Pin ``env.agent_start_pos`` back to ``cfg.start_pos`` after training.
+
+    No-op when ``cfg.exploring_starts`` is False. Trainers must call this
+    after the training loop so subsequent evaluation rollouts begin from
+    the requested fixed start position rather than a leftover exploring-
+    starts sample.
+    """
+    if cfg.exploring_starts:
+        env.agent_start_pos = cfg.start_pos
 
 
 def parse_start_pos(raw: str | None) -> Position | None:

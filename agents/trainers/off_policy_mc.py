@@ -9,10 +9,12 @@ from agents.trainers.common import (
     RewardFunction,
     TrainConfig,
     build_episode_iter,
+    build_episode_start_picker,
     build_logger,
     mean_tail,
     policy_disagreement_from_q_table,
     q_table_as_array,
+    restore_eval_start,
     should_log,
     validate_log_interval,
 )
@@ -43,6 +45,8 @@ def train(
     validate_log_interval(cfg)
     if cfg.off_policy_update not in {"weighted", "alpha"}:
         raise ValueError("TrainConfig.off_policy_update must be 'weighted' or 'alpha'")
+
+    pick_episode_start = build_episode_start_picker(env, cfg)
 
     max_episode_length = (
         cfg.max_episode_length if cfg.max_episode_length is not None else _DEFAULT_MAX_EPISODE_LENGTH
@@ -91,7 +95,7 @@ def train(
     episode_iter = build_episode_iter(cfg.mc_episodes, logger, "Off-policy MC")
 
     for episode_idx in episode_iter:
-        state = env.reset(agent_start_pos=cfg.start_pos)
+        state = env.reset(agent_start_pos=pick_episode_start())
         env.reward_fn = reward_fn
         agent.start_episode()
         ep_discounted_reward = 0.0
@@ -152,6 +156,7 @@ def train(
                 agent_policy=agent.policy,
             )
 
+    restore_eval_start(env, cfg)
     agent.build_value_and_policy()
 
     metrics: dict[str, list[float]] = {
@@ -188,6 +193,7 @@ def train(
             "max_episode_length": max_episode_length,
             "log_interval": log_interval,
             "log_q_table": cfg.log_q_table,
+            "exploring_starts": cfg.exploring_starts,
         },
     )
     return agent, history

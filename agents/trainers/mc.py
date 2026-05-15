@@ -15,10 +15,12 @@ from agents.trainers.common import (
     RewardFunction,
     TrainConfig,
     build_episode_iter,
+    build_episode_start_picker,
     build_logger,
     mean_tail,
     policy_disagreement_from_q_table,
     q_table_as_array,
+    restore_eval_start,
     should_log,
     validate_log_interval,
 )
@@ -51,6 +53,8 @@ def train(
     if cfg.start_pos is None:
         raise ValueError("TrainConfig.start_pos is required for Monte Carlo")
     validate_log_interval(cfg)
+
+    pick_episode_start = build_episode_start_picker(env, cfg)
 
     max_episode_length = (
         cfg.max_episode_length if cfg.max_episode_length is not None else _DEFAULT_MAX_EPISODE_LENGTH
@@ -93,7 +97,7 @@ def train(
     episode_iter = build_episode_iter(cfg.mc_episodes, logger, "MC")
 
     for episode_idx in episode_iter:
-        state = env.reset(agent_start_pos=cfg.start_pos)
+        state = env.reset(agent_start_pos=pick_episode_start())
         env.reward_fn = reward_fn
         agent.start_episode()
         ep_discounted_reward = 0.0
@@ -153,6 +157,7 @@ def train(
                 agent_policy=agent.policy,
             )
 
+    restore_eval_start(env, cfg)
     agent.set_eval_mode()
 
     metrics: dict[str, list[float]] = {
@@ -183,6 +188,7 @@ def train(
             "q_init_noise": cfg.q_init_noise,
             "log_interval": log_interval,
             "log_q_table": cfg.log_q_table,
+            "exploring_starts": cfg.exploring_starts,
         },
     )
     return agent, history
