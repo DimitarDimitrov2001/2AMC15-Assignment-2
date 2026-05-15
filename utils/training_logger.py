@@ -19,6 +19,9 @@ type Q = np.ndarray
 class TrainingLogger(ABC):
     """Interface for training progress loggers.
 
+    Implements the context-manager protocol so callers can use
+    ``with logger:`` to guarantee cleanup (e.g. ``wandb.finish()``).
+
     Implementations are compatible with ``q_learning``, ``double_q_learning``,
     and ``q_learning_vfa`` because those functions call this signature directly
     at each configured logging interval.
@@ -34,12 +37,15 @@ class TrainingLogger(ABC):
         current_alpha: float | None = None,
         current_epsilon: float | None = None,
         mean_q_delta: float | None = None,
+        policy_diff: float | None = None,
+        discounted_return: float | None = None,
+        env_grid: np.ndarray | None = None,
+        optimal_policy: dict | None = None,
+        agent_start_pos: tuple[int, int] | None = None,
+        agent_values: dict | None = None,
+        agent_policy: dict | None = None,
     ) -> None:
         """Log one training iteration."""
-
-    def close(self) -> None:
-        """Optional cleanup hook for implementations that need it."""
-        return
 
 
 class ConsoleTrainingLogger(TrainingLogger):
@@ -81,6 +87,13 @@ class ConsoleTrainingLogger(TrainingLogger):
         current_alpha: float | None = None,
         current_epsilon: float | None = None,
         mean_q_delta: float | None = None,
+        policy_diff: float | None = None,
+        discounted_return: float | None = None,
+        env_grid: np.ndarray | None = None,
+        optimal_policy: dict | None = None,
+        agent_start_pos: tuple[int, int] | None = None,
+        agent_values: dict | None = None,
+        agent_policy: dict | None = None,
     ) -> None:
         """Log a training iteration as console text."""
         rendered = self._format_status_line(
@@ -90,6 +103,8 @@ class ConsoleTrainingLogger(TrainingLogger):
             current_alpha=current_alpha,
             current_epsilon=current_epsilon,
             mean_q_delta=mean_q_delta,
+            policy_diff=policy_diff,
+            discounted_return=discounted_return,
         )
 
         if self._show_q_table:
@@ -105,6 +120,8 @@ class ConsoleTrainingLogger(TrainingLogger):
         current_alpha: float | None,
         current_epsilon: float | None,
         mean_q_delta: float | None,
+        policy_diff: float | None,
+        discounted_return: float | None,
     ) -> str:
         parts = [
             "Episode: %d" % episode,
@@ -116,6 +133,10 @@ class ConsoleTrainingLogger(TrainingLogger):
             parts.append("eps: %.4f" % current_epsilon)
         if current_alpha is not None:
             parts.append("alpha: %.4f" % current_alpha)
+        if discounted_return is not None:
+            parts.append("G_0: %.4f" % discounted_return)
+        if policy_diff is not None:
+            parts.append("policy_diff: %.4f" % policy_diff)
         parts.append("converged: %s" % converged)
         return " | ".join(parts)
 
@@ -154,3 +175,69 @@ class ConsoleTrainingLogger(TrainingLogger):
         sys.stdout.write(rendered + "\n")
         sys.stdout.flush()
         self._rendered_lines = line_count
+
+
+class WandbTrainingLogger(TrainingLogger):
+    """Weights & Biases logger for training metrics.
+
+    Expects a W&B run to be active (``wandb.init()`` already called).
+    Lifecycle management (init/finish) belongs to the caller.
+    """
+
+    def log_iteration(
+        self,
+        episode: int,
+        q_values: Q,
+        q_delta: float,
+        converged: bool,
+        current_alpha: float | None = None,
+        current_epsilon: float | None = None,
+        mean_q_delta: float | None = None,
+        policy_diff: float | None = None,
+        discounted_return: float | None = None,
+        env_grid: np.ndarray | None = None,
+        optimal_policy: dict | None = None,
+        agent_start_pos: tuple[int, int] | None = None,
+        agent_values: dict | None = None,
+        agent_policy: dict | None = None,
+    ) -> None:
+        import wandb
+        from utils.rl_plots import plot_value_and_policy, plot_policy_disagreement
+        import matplotlib.pyplot as plt
+        
+        metrics = {
+            "episode": episode,
+            "max_dQ": q_delta,
+        }
+        if mean_q_delta is not None:
+            metrics["mean_dQ"] = mean_q_delta
+        if current_epsilon is not None:
+            metrics["epsilon"] = current_epsilon
+        if current_alpha is not None:
+            metrics["alpha"] = current_alpha
+        if discounted_return is not None:
+            metrics["discounted_return"] = discounted_return
+        if policy_diff is not None:
+            metrics["policy_diff"] = policy_diff
+            
+        # Generate live plots if we have the necessary data
+        if env_grid is not None and agent_values is not None and agent_policy is not None:
+            fig_vp, _ = plot_value_and_policy(
+                env_grid, agent_values, agent_policy,
+                title=f"Live Value and Policy (Ep {episode})",
+                agent_start_pos=agent_start_pos,
+            )
+            metrics["Live Value and Policy"] = wandb.Image(fig_vp)
+            plt.close(fig_vp)
+            
+            if optimal_policy is not None:
+                fig_diff, _ = plot_policy_disagreement(
+                    env_grid, optimal_policy, agent_policy,
+                    title=f"Live Policy Disagreement (Ep {episode})",
+                    agent_start_pos=agent_start_pos,
+                )
+                metrics["Live Policy Disagreement"] = wandb.Image(fig_diff)
+                plt.close(fig_diff)
+            
+        wandb.log(metrics)
+

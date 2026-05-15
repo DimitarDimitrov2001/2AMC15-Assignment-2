@@ -21,15 +21,18 @@ class BaseAgent(ABC):
             state: The updated position of the agent.
         """
         raise NotImplementedError
-    
-    @abstractmethod
-    def update(self, state: tuple[int, int], reward: float, action: int):
-        """Any code that processes a reward given the state and updates the agent.
+
+    def update(self, state: tuple[int, int], reward: float, action: int) -> None:
+        """Process a reward and update the agent's policy/value estimates.
+
+        Default implementation is a no-op. Agents that learn from per-step
+        transitions (e.g. temporal-difference methods like Q-learning) should
+        override this. Monte Carlo accumulates updates per episode and Value
+        Iteration trains before any rollout, so both inherit the no-op.
 
         Args:
             state: The updated position of the agent.
-            reward: The value which is returned by the environment as a
-                reward.
-            action: The action which was taken by the agent.
+            reward: The value returned by the environment as a reward.
+            action: The action that was taken by the agent.
         """
-        raise NotImplementedError
+        return
