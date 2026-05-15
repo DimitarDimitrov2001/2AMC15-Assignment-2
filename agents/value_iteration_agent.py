@@ -269,7 +269,7 @@ class ValueIterationAgent(BaseAgent):
         ``gamma^d`` for path-length differences ``d``) separated.
         """
         if tol is None:
-            tol = 100* self.theta
+            tol = 10 * self.theta
         result: dict[Position, frozenset[int]] = {}
         for state in self.states:
             if state in self.target_states:
