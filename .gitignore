@@ -241,3 +241,9 @@ venv.bak/
 
 # wandb
 wandb
+
+# pr-ready skill marker
+.pr-ready.json
+
+# macOS
+.DS_Store
