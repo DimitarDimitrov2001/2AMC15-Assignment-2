@@ -10,10 +10,10 @@ from world.grid_codes import BOUNDARY_WALL_CELL, EMPTY_CELL, OBSTACLE_CELL, TARG
 
 RewardFunction = Callable[[np.ndarray, tuple[int, int]], int]
 
-STEP_REWARD = -3
-TARGET_REWARD = 10
+STEP_REWARD = -1
+TARGET_REWARD = 50
 
-WALL_OR_OBSTACLE_REWARD = -4
+WALL_OR_OBSTACLE_REWARD = -5
 MIN_TARGET_REWARD = 10
 DISTANCE_MULTIPLIER = 5.0
 DISTANCE_FROM_START_REWARD = 3.0
@@ -45,8 +45,10 @@ def build_basic_reward_function() -> RewardFunction:
         cell_value = int(grid[agent_pos])
         if cell_value == TARGET_CELL:
             return TARGET_REWARD
-        if cell_value in (EMPTY_CELL, BOUNDARY_WALL_CELL, OBSTACLE_CELL):
+        if cell_value == EMPTY_CELL:
             return STEP_REWARD
+        if cell_value in (BOUNDARY_WALL_CELL, OBSTACLE_CELL):
+            return WALL_OR_OBSTACLE_REWARD
         raise ValueError(f"Grid cell should not have value {cell_value} at position {agent_pos}.")
 
     return reward_function
