@@ -10,12 +10,13 @@ from world.grid_codes import BOUNDARY_WALL_CELL, EMPTY_CELL, OBSTACLE_CELL, TARG
 
 RewardFunction = Callable[[np.ndarray, tuple[int, int]], int]
 
-STEP_REWARD = -1
+STEP_REWARD = -3
 TARGET_REWARD = 10
 
-# Legacy constants kept for the Manhattan-scaled variant below.
-WALL_OR_OBSTACLE_REWARD = -5
+WALL_OR_OBSTACLE_REWARD = -4
 MIN_TARGET_REWARD = 10
+DISTANCE_MULTIPLIER = 5.0
+DISTANCE_FROM_START_REWARD = 3.0
 
 
 def _manhattan_distance(start_pos: tuple[int, int], target_pos: tuple[int, int]) -> int:
@@ -58,13 +59,14 @@ def build_manhattan_reward_function(start_pos: tuple[int, int], target_pos: tupl
     hits more heavily (-5) and scales the target reward with the distance to
     encourage faster convergence on larger grids.
     """
-
-    target_reward = max(MIN_TARGET_REWARD, 2 * _manhattan_distance(start_pos, target_pos))
+    full_distance = _manhattan_distance(start_pos, target_pos)
+    target_reward = max(MIN_TARGET_REWARD, DISTANCE_MULTIPLIER * full_distance)
 
     def reward_function(grid: np.ndarray, agent_pos: tuple[int, int]) -> int:
         cell_value = int(grid[agent_pos])
         if cell_value == EMPTY_CELL:
-            return STEP_REWARD
+            distance_from_start = _manhattan_distance(start_pos=start_pos, target_pos=agent_pos)
+            return STEP_REWARD + (distance_from_start / full_distance) * DISTANCE_FROM_START_REWARD
         if cell_value in (BOUNDARY_WALL_CELL, OBSTACLE_CELL):
             return WALL_OR_OBSTACLE_REWARD
         if cell_value == TARGET_CELL:
