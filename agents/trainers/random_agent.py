@@ -8,7 +8,7 @@ and returns ``None`` for the history. Module name avoids shadowing the
 from __future__ import annotations
 
 from agents.random_agent import RandomAgent
-from agents.trainers.common import Policy, RewardFunction, TrainConfig
+from agents.trainers.common import OptimalActionSets, RewardFunction, TrainConfig
 from utils.plotting import TrainingHistory
 from world import Environment
 
@@ -18,7 +18,7 @@ def train(
     reward_fn: RewardFunction,
     cfg: TrainConfig,
     *,
-    optimal_policy: Policy | None = None,
+    optimal_policy: OptimalActionSets | None = None,
 ) -> tuple[RandomAgent, TrainingHistory | None]:
     """Return a fresh RandomAgent. Random does not learn, so history is ``None``.
 

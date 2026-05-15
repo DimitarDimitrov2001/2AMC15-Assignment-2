@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.trainers.common import Policy, RewardFunction, TrainConfig
+from agents.trainers.common import OptimalActionSets, RewardFunction, TrainConfig
 from agents.value_iteration_agent import ValueIterationAgent
 from utils.plotting import TrainingHistory
 from world import Environment
@@ -13,7 +13,7 @@ def train(
     reward_fn: RewardFunction,
     cfg: TrainConfig,
     *,
-    optimal_policy: Policy | None = None,
+    optimal_policy: OptimalActionSets | None = None,
 ) -> tuple[ValueIterationAgent, TrainingHistory | None]:
     """Run value iteration to convergence and return the agent plus history.
 
