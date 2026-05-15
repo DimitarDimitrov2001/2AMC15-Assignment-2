@@ -442,7 +442,7 @@ def main() -> None:
     trainer = TRAINERS[args.agent]
     # --compare_optimal is only meaningful for agents that learn a policy
     # mid-training. VI is the reference itself; random has no policy.
-    use_reference = bool(getattr(args, "compare_optimal", True)) and args.agent in {
+    use_reference = args.compare_optimal and args.agent in {
         "q_learning",
         "mc",
         "off_policy_mc",
