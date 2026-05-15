@@ -69,7 +69,7 @@ def _draw_grid_background(ax: plt.Axes, grid: np.ndarray) -> None:
     cell_rgba = {
         BOUNDARY_WALL_CELL: _hex_to_rgba(_WALL_COLOR),
         OBSTACLE_CELL:      _hex_to_rgba(_OBSTACLE_COLOR),
-        TARGET_CELL:        _hex_to_rgba(_TARGET_COLOR, alpha=0.6),
+        TARGET_CELL:        _hex_to_rgba(_TARGET_COLOR),
         EMPTY_CELL:         _hex_to_rgba(_EMPTY_COLOR),
     }
     for cell_type, rgba in cell_rgba.items():
@@ -269,7 +269,7 @@ _MATCH_ARROW_COLOR = "#7A7A7A"
 
 def plot_policy_disagreement(
     grid: np.ndarray,
-    optimal_policy: dict[tuple[int, int], int],
+    optimal_policy: dict[tuple[int, int], frozenset[int]],
     learned_policy: dict[tuple[int, int], int],
     title: str = "Policy Disagreement",
     agent_start_pos: tuple[int, int] | None = None,
@@ -278,15 +278,16 @@ def plot_policy_disagreement(
     """Overlay the learned policy with disagreeing cells highlighted red.
 
     For each state in ``optimal_policy`` the learned greedy action is drawn
-    as an arrow. Cells where the learned action differs from the reference
-    are painted with a red translucent square and their arrow is tinted red.
-    Cells that match keep a neutral grey arrow. Unvisited states default to
-    action 0 — same convention as ``policy_disagreement``.
+    as an arrow. Cells where the learned action is not in the set of
+    optimal actions are painted with a red translucent square and their
+    arrow is tinted red. Cells whose learned action is in the optimal set
+    (including ties) keep a neutral grey arrow. Unvisited states default
+    to action 0 — same convention as ``policy_disagreement``.
 
     Args:
         grid:            Grid array with shape ``(n_cols, n_rows)``.
-        optimal_policy:  Reference policy ``(col, row) -> action_int``
-                         (typically the trained VI agent's policy).
+        optimal_policy:  Reference policy ``(col, row) -> frozenset(action_int)``
+                         (typically the trained VI agent's tied-optimal actions).
         learned_policy:  Learned policy from QL or MC, same shape.
         title:           Axes title.
         agent_start_pos: If given, draws a yellow 'S' marker.
@@ -320,7 +321,7 @@ def plot_policy_disagreement(
     mismatch_v: list[int] = []
     n_mismatches = 0
 
-    for (col, row), optimal_action in optimal_policy.items():
+    for (col, row), optimal_actions in optimal_policy.items():
         if not (0 <= col < n_cols and 0 <= row < n_rows):
             continue
         if grid[col, row] in (BOUNDARY_WALL_CELL, OBSTACLE_CELL):
@@ -328,7 +329,7 @@ def plot_policy_disagreement(
 
         learned_action = learned_policy.get((col, row), 0)
         dc, dr = _ACTION_TO_DELTA[learned_action]
-        if learned_action == optimal_action:
+        if learned_action in optimal_actions:
             match_x.append(col); match_y.append(row); match_u.append(dc); match_v.append(dr)
         else:
             n_mismatches += 1
@@ -583,7 +584,7 @@ def plot_hyperparameter_comparison(
         }
         fig, axes = plot_hyperparameter_comparison(
             conditions,
-            metrics=["avg_reward", "delta_q"],
+            metrics=["discounted_return", "delta_q"],
             title="Effect of Stochasticity  (γ=0.9, A1 grid)",
         )
 

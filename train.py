@@ -11,6 +11,7 @@ max_steps, ...) live on a parent parser used by all subcommands.
 from __future__ import annotations
 
 from argparse import ArgumentParser, ArgumentTypeError, Namespace
+from datetime import datetime
 from pathlib import Path
 
 from agents.trainers import (
@@ -47,7 +48,15 @@ def _build_shared_parser() -> ArgumentParser:
     parent.add_argument("--eval_episodes", type=int, default=20, help="Number of evaluation rollouts.")
     parent.add_argument("--random_seed", type=int, default=0, help="Random seed for the environment.")
     parent.add_argument("--start_pos", type=str, default=None, help="Agent start position as col,row.")
-    parent.add_argument("--out_dir", type=Path, default=Path("results"), help="Output directory for artifacts.")
+    parent.add_argument(
+        "--out_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Output directory for artifacts. Defaults to "
+            "results/<agent>_<timestamp>/ when omitted."
+        ),
+    )
     parent.add_argument(
         "--compare_optimal",
         action="store_true",
@@ -86,10 +95,31 @@ def _add_alpha_epsilon_args(subparser: ArgumentParser, *, default_epsilon: float
                             default_alpha_decay: float, default_alpha_min: float, default_epsilon_min: float,
                             default_alpha: float | None) -> None:
     """Attach the shared alpha/epsilon schedule flags to a subparser."""
-    subparser.add_argument("--alpha", type=float, default=default_alpha, help="Learning rate.")
-    subparser.add_argument("--alpha_min", type=float, default=default_alpha_min, help="Minimum learning rate.")
-    subparser.add_argument("--alpha_decay", type=float, default=default_alpha_decay, help="Per-episode decay for alpha.")
-    subparser.add_argument("--fixed_alpha", action="store_true", help="Disable alpha decay.")
+    subparser.add_argument("--alpha", type=float, default=default_alpha, help="Learning rate (initial value for exponential, base value for constant; ignored for visit_count).")
+    subparser.add_argument("--alpha_min", type=float, default=default_alpha_min, help="Minimum learning rate (exponential schedule only).")
+    subparser.add_argument("--alpha_decay", type=float, default=default_alpha_decay, help="Per-episode decay for alpha (exponential schedule only).")
+    subparser.add_argument(
+        "--lr_schedule",
+        choices=("exponential", "constant", "visit_count"),
+        default="exponential",
+        help=(
+            "Learning rate schedule. 'exponential' decays alpha per episode "
+            "(uses --alpha/--alpha_decay/--alpha_min). 'constant' keeps --alpha "
+            "fixed throughout. 'visit_count' uses c / (c + N(s, a)); set c via "
+            "--visit_count_c."
+        ),
+    )
+    subparser.add_argument(
+        "--visit_count_c",
+        type=float,
+        default=1.0,
+        help=(
+            "Offset c for the visit_count schedule alpha = c / (c + N(s, a)). "
+            "Default 1.0 follows the textbook but decays alpha aggressively "
+            "(below 0.01 after ~100 visits per (s, a)). Practical values are "
+            "typically 5-50 to keep updates substantial for longer."
+        ),
+    )
     subparser.add_argument("--epsilon", type=float, default=default_epsilon, help="Initial exploration rate.")
     subparser.add_argument("--epsilon_min", type=float, default=default_epsilon_min, help="Minimum exploration rate.")
     subparser.add_argument("--epsilon_decay", type=float, default=default_epsilon_decay, help="Per-episode decay for epsilon.")
@@ -224,9 +254,30 @@ def parse_args() -> Namespace:
         "--alpha_decay",
         type=float,
         default=0.9998,
-        help="Per-episode decay for alpha.",
+        help="Per-episode decay for alpha (exponential schedule only).",
     )
-    off_mc.add_argument("--fixed_alpha", action="store_true", help="Disable alpha decay.")
+    off_mc.add_argument(
+        "--lr_schedule",
+        choices=("exponential", "constant", "visit_count"),
+        default="exponential",
+        help=(
+            "Learning rate schedule (alpha update mode only; ignored when "
+            "--off_policy_update weighted is used since weighted importance "
+            "sampling has its own intrinsic step size). 'exponential' uses "
+            "--alpha/--alpha_decay/--alpha_min. 'constant' keeps --alpha fixed. "
+            "'visit_count' uses c / (c + N(s, a)); set c via --visit_count_c."
+        ),
+    )
+    off_mc.add_argument(
+        "--visit_count_c",
+        type=float,
+        default=1.0,
+        help=(
+            "Offset c for the visit_count schedule alpha = c / (c + N(s, a)). "
+            "Default 1.0 follows the textbook but decays alpha aggressively; "
+            "practical values are typically 5-50."
+        ),
+    )
     off_mc.add_argument(
         "--off_policy_update",
         choices=("weighted", "alpha"),
@@ -301,15 +352,16 @@ def _config_from_args(args: Namespace) -> TrainConfig:
         alpha=getattr(args, "alpha", None),
         alpha_min=getattr(args, "alpha_min", None),
         alpha_decay=getattr(args, "alpha_decay", None),
+        lr_schedule=getattr(args, "lr_schedule", "exponential"),
+        visit_count_c=getattr(args, "visit_count_c", 1.0),
         epsilon=getattr(args, "epsilon", None),
         epsilon_min=getattr(args, "epsilon_min", None),
         epsilon_decay=getattr(args, "epsilon_decay", None),
-        fixed_alpha=getattr(args, "fixed_alpha", False),
         fixed_epsilon=getattr(args, "fixed_epsilon", False),
         ql_episodes=getattr(args, "episodes", None) if args.agent == "q_learning" else None,
         mc_episodes=getattr(args, "episodes", None) if args.agent in {"mc", "off_policy_mc"} else None,
         max_episode_length=getattr(args, "max_episode_length", None),
-        log_interval=getattr(args, "log_interval", 0),
+        log_interval=getattr(args, "log_interval", 100),
         log_q_table=getattr(args, "log_q_table", False),
         q_init=getattr(args, "q_init", 0.0),
         q_init_noise=getattr(args, "q_init_noise", 1e-6),
@@ -328,12 +380,15 @@ def _config_from_args(args: Namespace) -> TrainConfig:
 def main() -> None:
     """CLI entry point: dispatch to the chosen trainer per grid."""
     args = parse_args()
+    if args.out_dir is None:
+        run_timestamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+        args.out_dir = Path("results") / f"{args.agent}_{run_timestamp}"
     args.out_dir.mkdir(parents=True, exist_ok=True)
     cfg = _config_from_args(args)
     trainer = TRAINERS[args.agent]
     # --compare_optimal is only meaningful for agents that learn a policy
     # mid-training. VI is the reference itself; random has no policy.
-    use_reference = bool(getattr(args, "compare_optimal", False)) and args.agent in {
+    use_reference = bool(getattr(args, "compare_optimal", True)) and args.agent in {
         "q_learning",
         "mc",
         "off_policy_mc",
@@ -356,14 +411,41 @@ def main() -> None:
 
             wandb.init(
                 project=run_cfg.wandb_project,
+                name=f"{args.out_dir.name}_{grid_path.stem}",
                 config=run_cfg.__dict__,
                 reinit="finish_previous",
+            )
+            # Pin the exact reward function source to this run so the choice
+            # (manhattan vs basic) AND the implementation can be reproduced
+            # later without checking out the same commit.
+            #
+            # The reward constants are *also* logged as scalar config keys
+            # (under reward_constants.*) so they're filterable and sortable
+            # in the W&B sweep/dashboard UI without parsing the source text.
+            _rewards_src_path = Path(__file__).resolve().parent / "world" / "rewards.py"
+            from world.rewards import (
+                MIN_TARGET_REWARD,
+                STEP_REWARD,
+                TARGET_REWARD,
+                WALL_OR_OBSTACLE_REWARD,
+            )
+            wandb.config.update(
+                {
+                    "reward_function_source": _rewards_src_path.read_text(encoding="utf-8"),
+                    "reward_constants": {
+                        "STEP_REWARD": STEP_REWARD,
+                        "TARGET_REWARD": TARGET_REWARD,
+                        "WALL_OR_OBSTACLE_REWARD": WALL_OR_OBSTACLE_REWARD,
+                        "MIN_TARGET_REWARD": MIN_TARGET_REWARD,
+                    },
+                },
+                allow_val_change=True,
             )
 
         optimal_policy = None
         if use_reference:
             vi_agent, _ = TRAINERS["value_iteration"](env, reward_fn, run_cfg)
-            optimal_policy = vi_agent.policy
+            optimal_policy = vi_agent.optimal_action_sets()
 
         agent, history = trainer(env, reward_fn, run_cfg, optimal_policy=optimal_policy)
 

@@ -2,13 +2,16 @@
 
 This class only knows how to choose actions, record transitions, and finalise
 an episode. The driving loop (episode iteration, env interaction, history
-construction) lives in ``agents/trainers/mc.py`` — same pattern as Q-learning.
+construction) lives in ``agents/trainers/mc.py`` -- same pattern as Q-learning.
 
-Step-size update is constant-alpha (Sutton & Barto §6.1). The classical
-sample-mean / 1/N variant has been removed: it stalls quickly on grids where
-state-action pairs are revisited often, making the agent unusable on A1 within
-a reasonable episode budget. If you need 1/N for a comparison, reintroduce
-it locally rather than as the agent's default.
+Step-size update is driven by a ``LearningRateSchedule``. The default is the
+constant-alpha (Sutton & Barto §6.1) variant via ``ExponentialDecaySchedule``
+with ``decay=1.0``; trainers can swap in exponential decay or a state-action
+visit-count schedule by passing ``lr_schedule`` explicitly. The classical
+sample-mean / 1/N variant is *not* a special case the agent provides --
+expressing it as ``VisitCountSchedule(c=0)`` would be slightly different (the
+visit-count schedule uses ``c / (c + N)`` with ``c > 0`` for the Robbins-Monro
+guarantee).
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from agents.base_agent import BaseAgent
+from agents.learning_rates import ExponentialDecaySchedule, LearningRateSchedule
 
 
 @dataclass(frozen=True)
@@ -28,12 +32,22 @@ class MCEpisodeResult:
 
     The trainer accumulates these into the ``TrainingHistory`` after the
     loop, the same way the Q-learning trainer accumulates episode rewards.
+
+    ``alpha`` is the mean of the alphas actually applied during this
+    episode's first-visit updates. For schedules with a fixed global rate
+    (constant or exponential) every applied alpha equals the global rate,
+    so the mean is that rate; for visit-count it is a genuine per-episode
+    average. ``alpha_min``/``alpha_max`` capture the spread within the
+    episode (always equal for fixed-rate schedules; informative for
+    visit-count).
     """
 
     delta_q: float
     total_reward: float
     epsilon: float
-    alpha: float
+    alpha: float | None
+    alpha_min: float | None
+    alpha_max: float | None
 
 
 class MCAgent(BaseAgent):
@@ -45,13 +59,15 @@ class MCAgent(BaseAgent):
     epsilon_decay: float
     epsilon_min: float
     alpha: float
-    alpha_decay: float
-    alpha_min: float
     q_init: float
     q_init_noise: float
     q_table: dict[tuple[int, int], np.ndarray]
     values: dict[tuple[int, int], float]
     policy: dict[tuple[int, int], int]
+    lr_schedule: LearningRateSchedule
+    last_episode_mean_alpha: float | None
+    last_episode_alpha_min: float | None
+    last_episode_alpha_max: float | None
 
     _episode: list[tuple[tuple[int, int], int, float]]
     _rng: random.Random
@@ -65,7 +81,7 @@ class MCAgent(BaseAgent):
         epsilon: float = 0.2,
         epsilon_decay: float = 1.0,
         epsilon_min: float = 0.01,
-        # --- alpha ---
+        # --- alpha (legacy; ignored when lr_schedule is supplied) ---
         alpha: float = 0.1,
         alpha_decay: float = 1.0,
         alpha_min: float = 0.01,
@@ -73,14 +89,9 @@ class MCAgent(BaseAgent):
         q_init: float = 0.0,
         q_init_noise: float = 1e-6,
         random_seed: int | None = 0,
+        lr_schedule: LearningRateSchedule | None = None,
     ):
         super().__init__()
-        if not 0.0 < alpha <= 1.0:
-            raise ValueError("alpha must be in (0, 1]")
-        if not 0.0 <= alpha_min <= alpha:
-            raise ValueError("alpha_min must be in [0, alpha]")
-        if not 0.0 < alpha_decay <= 1.0:
-            raise ValueError("alpha_decay must be in (0, 1]")
         if q_init_noise < 0.0:
             raise ValueError("q_init_noise must be >= 0")
 
@@ -91,10 +102,6 @@ class MCAgent(BaseAgent):
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
 
-        self.alpha = alpha
-        self.alpha_decay = alpha_decay
-        self.alpha_min = alpha_min
-
         self.q_init = q_init
         self.q_init_noise = q_init_noise
 
@@ -102,6 +109,22 @@ class MCAgent(BaseAgent):
         # does not mutate the global random/np.random state. The environment
         # and other agents are unaffected by construction order.
         self._rng = random.Random(random_seed)
+
+        # Trainers pass an explicit schedule; legacy callers keep the old
+        # alpha/alpha_decay/alpha_min surface, which we collapse onto an
+        # ExponentialDecaySchedule here. Validation now lives inside the
+        # schedule constructor.
+        if lr_schedule is None:
+            lr_schedule = ExponentialDecaySchedule(
+                alpha=alpha, decay=alpha_decay, minimum=alpha_min,
+            )
+        self.lr_schedule = lr_schedule
+
+        global_rate = self.lr_schedule.get_global_rate()
+        self.alpha = global_rate if global_rate is not None else float("nan")
+        self.last_episode_mean_alpha = None
+        self.last_episode_alpha_min = None
+        self.last_episode_alpha_max = None
 
         self.q_table = defaultdict(self._initial_q_values)
         self._episode = []
@@ -157,11 +180,14 @@ class MCAgent(BaseAgent):
     def end_episode(self) -> MCEpisodeResult:
         """Apply first-visit MC updates from the current episode trajectory."""
         if not self._episode:
+            self.lr_schedule.update_episode()
             return MCEpisodeResult(
                 delta_q=0.0,
                 total_reward=0.0,
                 epsilon=self.epsilon,
-                alpha=self.alpha,
+                alpha=self.lr_schedule.get_global_rate(),
+                alpha_min=None,
+                alpha_max=None,
             )
 
         returns: list[tuple[tuple[int, int], int, float]] = []
@@ -173,16 +199,34 @@ class MCAgent(BaseAgent):
 
         visited: set[tuple[tuple[int, int], int]] = set()
         max_delta = 0.0
+        episode_alphas: list[float] = []
         for state, action, g_t in returns:
             if (state, action) in visited:
                 continue
             visited.add((state, action))
+            applied_alpha = self.lr_schedule.get_rate(state, action)
+            episode_alphas.append(applied_alpha)
             old_q = self.q_table[state][action]
-            self.q_table[state][action] += self.alpha * (g_t - old_q)
+            self.q_table[state][action] += applied_alpha * (g_t - old_q)
             max_delta = max(max_delta, abs(self.q_table[state][action] - old_q))
 
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        self.alpha = max(self.alpha_min, self.alpha * self.alpha_decay)
+        self.lr_schedule.update_episode()
+
+        if episode_alphas:
+            self.last_episode_mean_alpha = float(sum(episode_alphas) / len(episode_alphas))
+            self.last_episode_alpha_min = float(min(episode_alphas))
+            self.last_episode_alpha_max = float(max(episode_alphas))
+        else:
+            global_rate = self.lr_schedule.get_global_rate()
+            self.last_episode_mean_alpha = global_rate
+            self.last_episode_alpha_min = global_rate
+            self.last_episode_alpha_max = global_rate
+
+        global_rate = self.lr_schedule.get_global_rate()
+        self.alpha = (
+            global_rate if global_rate is not None else (self.last_episode_mean_alpha or float("nan"))
+        )
 
         total_reward = float(sum(r for _, _, r in self._episode))
         self._episode.clear()
@@ -190,7 +234,9 @@ class MCAgent(BaseAgent):
             delta_q=float(max_delta),
             total_reward=total_reward,
             epsilon=float(self.epsilon),
-            alpha=float(self.alpha),
+            alpha=self.last_episode_mean_alpha,
+            alpha_min=self.last_episode_alpha_min,
+            alpha_max=self.last_episode_alpha_max,
         )
 
     def build_value_and_policy(self) -> None:

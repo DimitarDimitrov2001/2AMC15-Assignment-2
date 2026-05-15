@@ -33,6 +33,10 @@ from world import Environment, build_basic_reward_function, build_manhattan_rewa
 Position = tuple[int, int]
 RewardFunction = Callable[[np.ndarray, Position], float]
 Policy = dict[Position, int]
+# Reference policy as the set of (approximately) optimal actions per state.
+# Used to compare a learned single-action policy against the VI optimum
+# while crediting any tied-optimal action as agreement.
+OptimalActionSets = dict[Position, frozenset[int]]
 QTable = dict[Position, np.ndarray]
 
 
@@ -54,10 +58,11 @@ class TrainConfig:
     alpha: float | None = None
     alpha_min: float | None = None
     alpha_decay: float | None = None
+    lr_schedule: str = "exponential"
+    visit_count_c: float = 1.0
     epsilon: float | None = None
     epsilon_min: float | None = None
     epsilon_decay: float | None = None
-    fixed_alpha: bool = False
     fixed_epsilon: bool = False
     ql_episodes: int | None = None
     mc_episodes: int | None = None
@@ -89,12 +94,24 @@ def q_table_as_array(q_table: QTable) -> np.ndarray:
     return np.vstack([q_table[state] for state in sorted(q_table)])
 
 
-def build_logger(cfg: TrainConfig) -> tuple[TrainingLogger | None, int]:
+def _default_log_interval(total_episodes: int) -> int:
+    """Resolve the fallback log interval to roughly 100 entries per run.
+
+    Clamped to a minimum of 1 so very short runs still emit at least one
+    log per episode rather than silently disabling logging via floor division.
+    """
+    return max(1, total_episodes // 100)
+
+
+def build_logger(
+    cfg: TrainConfig, total_episodes: int,
+) -> tuple[TrainingLogger | None, int]:
     """Create the appropriate training logger from *cfg*.
 
     Returns ``(logger, effective_log_interval)`` so callers never need to
-    mutate *cfg* as a side-effect.  When W&B is enabled but
-    ``cfg.log_interval`` is 0, the effective interval defaults to 100.
+    mutate *cfg* as a side-effect. When W&B is enabled but
+    ``cfg.log_interval`` is 0, the effective interval defaults to
+    ``max(1, total_episodes // 100)`` — i.e. ~100 log points per run.
 
     For W&B the caller must have already called ``wandb.init()``; the
     logger only records metrics to the active run.
@@ -102,7 +119,12 @@ def build_logger(cfg: TrainConfig) -> tuple[TrainingLogger | None, int]:
     if cfg.wandb:
         from utils.training_logger import WandbTrainingLogger
 
-        return WandbTrainingLogger(), cfg.log_interval if cfg.log_interval > 0 else 100
+        effective = (
+            cfg.log_interval
+            if cfg.log_interval > 0
+            else _default_log_interval(total_episodes)
+        )
+        return WandbTrainingLogger(), effective
     if cfg.log_interval > 0:
         from utils.training_logger import ConsoleTrainingLogger
 
@@ -130,6 +152,23 @@ def should_log(episode_num: int, log_interval: int, total_episodes: int) -> bool
     )
 
 
+def mean_tail(values: list[float], window: int) -> float:
+    """Mean of the last *window* entries (or all entries if shorter).
+
+    Used by trainers to smooth high-variance per-episode performance
+    metrics (discounted return, policy diff, max |dQ|) across the
+    current log interval so live console / W&B traces are readable
+    rather than noisy single-episode snapshots.
+    """
+    if not values:
+        return 0.0
+    if window <= 0 or window >= len(values):
+        tail = values
+    else:
+        tail = values[-window:]
+    return float(sum(tail) / len(tail))
+
+
 def validate_log_interval(cfg: TrainConfig) -> None:
     """Raise if ``cfg.log_interval`` is negative."""
     if cfg.log_interval < 0:
@@ -137,7 +176,7 @@ def validate_log_interval(cfg: TrainConfig) -> None:
 
 
 def policy_disagreement_from_q_table(
-    optimal_policy: Policy,
+    optimal_policy: OptimalActionSets,
     q_table: QTable,
 ) -> float:
     """Fraction of ``optimal_policy`` states where greedy(q_table) disagrees.
@@ -146,30 +185,36 @@ def policy_disagreement_from_q_table(
     metric can be sampled without calling ``set_eval_mode()`` or
     ``build_value_and_policy()``, which mutate agent state. Unvisited states
     default to action 0, matching the convention in ``policy_disagreement``.
+    A state is in agreement when the learned action belongs to the set of
+    (approximately) tied-optimal actions, so ties no longer count as misses.
     """
     if not optimal_policy:
         return float("nan")
     mismatches = 0
-    for state, optimal_action in optimal_policy.items():
+    for state, optimal_actions in optimal_policy.items():
         q_values = q_table.get(state)
         learned_action = 0 if q_values is None else int(np.argmax(q_values))
-        if learned_action != optimal_action:
+        if learned_action not in optimal_actions:
             mismatches += 1
     return mismatches / len(optimal_policy)
 
 
-def policy_disagreement(optimal_policy: Policy, agent: BaseAgent) -> float:
+def policy_disagreement(optimal_policy: OptimalActionSets, agent: BaseAgent) -> float:
     """End-of-training fraction of optimal-policy states the agent disagrees on.
 
     Reads ``agent.policy`` (a ``{state: action}`` dict on QL/MC/VI after
     training). Returns NaN when no reference policy is provided.
     Unvisited states default to action 0 — same as a zero Q-array's argmax.
+    A state is in agreement when the learned action belongs to the set of
+    (approximately) tied-optimal actions for that state.
     """
     if not optimal_policy or not hasattr(agent, "policy"):
         return float("nan")
     learned_policy: Policy = agent.policy  # type: ignore[attr-defined]
     mismatches = sum(
-        1 for state, action in optimal_policy.items() if learned_policy.get(state, 0) != action
+        1
+        for state, optimal_actions in optimal_policy.items()
+        if learned_policy.get(state, 0) not in optimal_actions
     )
     return mismatches / len(optimal_policy)
 
@@ -253,7 +298,7 @@ def save_run_artifacts(
     evaluation_metrics: dict,
     reward_fn: RewardFunction,
     cfg: TrainConfig,
-    optimal_policy: Policy | None = None,
+    optimal_policy: OptimalActionSets | None = None,
     policy_diff_scalar: float | None = None,
     history: TrainingHistory | None = None,
     wandb_log: bool = False,
@@ -306,15 +351,54 @@ def save_run_artifacts(
                 wandb_log=wandb_log,
             )
 
-    # Per-episode training curves (avg_reward, epsilon, policy_diff, ...).
+    # Per-episode training curves (discounted_return, epsilon, policy_diff, ...).
     # VI's value/policy plot already covers its history; non-VI runs with
-    # a captured history get a generic training-curves PNG.
+    # a captured history get training-curves PNGs.
     if history is not None and not isinstance(agent, ValueIterationAgent):
+        _PERFORMANCE_KEYS = {"discounted_return", "delta_q", "policy_diff"}
+        # alpha_min / alpha_max are populated only by visit-count schedules,
+        # where they capture the per-episode spread that mean alpha alone
+        # conflates. For fixed-rate schedules they are absent and the trace
+        # plot stays unchanged.
+        _HYPERPARAM_TRACE_KEYS = {
+            "epsilon",
+            "alpha",
+            "alpha_min",
+            "alpha_max",
+            "importance_weight",
+        }
+
+        perf_metrics = {k: v for k, v in history.metrics.items() if k in _PERFORMANCE_KEYS}
+        trace_metrics = {k: v for k, v in history.metrics.items() if k in _HYPERPARAM_TRACE_KEYS}
+
+        perf_history = TrainingHistory(
+            episodes=history.episodes,
+            metrics=perf_metrics,
+            hyperparams=history.hyperparams,
+            metadata=history.metadata,
+        )
         save_training_curves_artifact(
             out_dir=out_dir,
             artifact_prefix=artifact_prefix,
-            history=history,
+            history=perf_history,
             wandb_log=wandb_log,
+            suffix="performance_curves",
+            title=f"Performance - {artifact_prefix}",
+        )
+
+        trace_history = TrainingHistory(
+            episodes=history.episodes,
+            metrics=trace_metrics,
+            hyperparams=history.hyperparams,
+            metadata=history.metadata,
+        )
+        save_training_curves_artifact(
+            out_dir=out_dir,
+            artifact_prefix=artifact_prefix,
+            history=trace_history,
+            wandb_log=wandb_log,
+            suffix="hyperparam_traces",
+            title=f"Hyperparameters - {artifact_prefix}",
         )
 
     Environment.evaluate_agent(
