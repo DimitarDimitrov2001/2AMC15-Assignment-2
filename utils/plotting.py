@@ -78,7 +78,7 @@ class TrainingHistory:
         {
             "episodes": [1, 2, 3, ...],        # x-axis values  (required)
             "metrics": {                        # >=1 entry       (required)
-                "avg_reward": [float, ...],
+                "discounted_return": [float, ...],
                 "delta_q":    [float, ...],
             },
             "hyperparams": {                    # optional

@@ -15,6 +15,13 @@ import numpy as np
 
 from agents.base_agent import BaseAgent
 from utils.plotting import TrainingHistory
+from world.grid_codes import (
+    BOUNDARY_WALL_CELL,
+    EMPTY_CELL,
+    OBSTACLE_CELL,
+    START_CELL,
+    TARGET_CELL,
+)
 from world.helpers import ACTIONS_TO_DIRECTIONS
 from world.rewards import WALL_OR_OBSTACLE_REWARD
 
@@ -23,12 +30,6 @@ RewardFunction = Callable[[np.ndarray, tuple[int, int]], float]
 Position = tuple[int, int]
 ValueTable = dict[Position, float]
 Policy = dict[Position, int]
-
-EMPTY_CELL = 0
-BOUNDARY_WALL_CELL = 1
-OBSTACLE_CELL = 2
-TARGET_CELL = 3
-START_CELL = 4
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,31 @@ class ValueIterationAgent(BaseAgent):
             policy[state] = max(action_values, key=action_values.get)
         return policy
 
+    def optimal_action_sets(self, tol: float | None = None) -> dict[Position, frozenset[int]]:
+        """Per-state set of (approximately) optimal actions.
+
+        Two actions are considered tied when their Q-values differ by no
+        more than ``tol``. Default ``tol = 10 * self.theta`` absorbs VI's
+        Bellman-residual convergence error while staying tight enough to
+        keep genuinely different actions (with Q-gaps on the order of
+        ``gamma^d`` for path-length differences ``d``) separated.
+        """
+        if tol is None:
+            tol = 100* self.theta
+        result: dict[Position, frozenset[int]] = {}
+        for state in self.states:
+            if state in self.target_states:
+                continue
+            action_values = {
+                action: self.action_value(state, action, self.values)
+                for action in ACTIONS_TO_DIRECTIONS
+            }
+            v_max = max(action_values.values())
+            result[state] = frozenset(
+                action for action, value in action_values.items() if v_max - value <= tol
+            )
+        return result
+
     def take_action(self, state: Position) -> int:
         """Return the greedy action from the trained policy."""
         if not self.policy:
@@ -266,6 +292,5 @@ class ValueIterationAgent(BaseAgent):
             return 0
         return self.policy[state]
 
-    def update(self, state: Position, reward: float, action: int):
-        """Value iteration trains before rollout, so step updates are unused."""
-        return
+    # ``update()`` is inherited from BaseAgent as a no-op. VI trains before
+    # any rollout via the model-based ``train()`` method.

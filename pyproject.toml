@@ -13,4 +13,5 @@ dependencies = [
     "pillow>=9.4",
     "pygame>=2.3",
     "tqdm>=4",
+    "wandb>=0.26.1",
 ]
