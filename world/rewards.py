@@ -56,8 +56,11 @@ def build_manhattan_reward_function(start_pos: tuple[int, int], target_pos: tupl
     """Build a reward function scaled to the start-target Manhattan distance.
 
     Unlike the basic assignment reward, this variant penalises wall/obstacle
-    hits more heavily (-5) and scales the target reward with the distance to
-    encourage faster convergence on larger grids.
+    hits more heavily (``WALL_OR_OBSTACLE_REWARD``, currently -4 vs the basic
+    step reward of -3) and scales the target reward with the start-target
+    Manhattan distance to encourage faster convergence on larger grids. Empty
+    cells get an additional distance-from-start shaping term so making
+    forward progress is rewarded over staying put.
     """
     full_distance = _manhattan_distance(start_pos, target_pos)
     target_reward = max(MIN_TARGET_REWARD, DISTANCE_MULTIPLIER * full_distance)
