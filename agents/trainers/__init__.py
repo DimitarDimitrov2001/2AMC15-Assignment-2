@@ -21,6 +21,7 @@ from agents.base_agent import BaseAgent
 from agents.trainers import mc, off_policy_mc, q_learning, random_agent, value_iteration
 from agents.trainers.common import (
     REWARD_FUNCTIONS,
+    OptimalActionSets,
     Policy,
     RewardFunction,
     TrainConfig,
@@ -44,7 +45,7 @@ class TrainerFn(Protocol):
         reward_fn: RewardFunction,
         cfg: TrainConfig,
         *,
-        optimal_policy: Policy | None = None,
+        optimal_policy: OptimalActionSets | None = None,
     ) -> tuple[BaseAgent, TrainingHistory | None]: ...
 
 
@@ -57,6 +58,7 @@ TRAINERS: dict[str, TrainerFn] = {
 }
 
 __all__ = [
+    "OptimalActionSets",
     "Policy",
     "REWARD_FUNCTIONS",
     "RewardFunction",

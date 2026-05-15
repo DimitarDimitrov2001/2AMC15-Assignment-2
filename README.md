@@ -46,8 +46,10 @@ Useful shared options (available on every subcommand):
 Agent-specific options:
 
 - **`value_iteration`**: `--theta`, `--vi_max_iter`.
-- **`q_learning`**: `--episodes`, `--alpha`, `--alpha_min`, `--alpha_decay`, `--fixed_alpha`, `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon`.
+- **`q_learning`**: `--episodes`, `--alpha`, `--alpha_min`, `--alpha_decay`, `--lr_schedule`, `--visit_count_c`, `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon`.
 - **`mc`**: same alpha/epsilon flags as `q_learning`, plus `--episodes` and `--max_episode_length`. Uses constant-α first-visit updates (`Q ← Q + α·(G − Q)`); the classical 1/N sample-mean variant is not supported.
+
+> **Learning rate schedules.** `--lr_schedule exponential` (default) decays α per episode using `--alpha`/`--alpha_decay`/`--alpha_min`. `--lr_schedule constant` keeps `--alpha` fixed throughout. `--lr_schedule visit_count` uses the Robbins-Monro schedule `α = c / (c + N(s, a))` per state-action pair, with `c` set via `--visit_count_c`. The `--fixed_alpha` flag has been replaced by `--lr_schedule constant`.
 
 > **MC training notes.** On-policy first-visit MC with ε-greedy is high-variance: even at the default schedule, a single 5000-episode run on `A1_grid` can swing between 0% and 100% eval success across random seeds. For more stable evaluation, increase `--episodes` (10k–20k) or aggregate across multiple `--random_seed` runs.
 
