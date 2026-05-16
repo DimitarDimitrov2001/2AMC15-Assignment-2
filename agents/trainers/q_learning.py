@@ -79,6 +79,7 @@ def train(
     )
 
     episode_discounted_rewards: list[float] = []
+    episode_undiscounted_rewards: list[float] = []
     episode_deltas: list[float] = []
     episode_epsilons: list[float] = []
     episode_alphas: list[float] = []
@@ -104,6 +105,7 @@ def train(
         env.reward_fn = reward_fn
         agent.start_episode()
         ep_discounted_reward = 0.0
+        ep_undiscounted_reward = 0.0
         ep_delta = 0.0
         gamma_power = 1.0
         for _ in range(max_episode_length):
@@ -121,11 +123,13 @@ def train(
                 ep_delta = max(ep_delta, abs(new_q_value - old_q_value))
             state = next_state
             ep_discounted_reward += gamma_power * reward
+            ep_undiscounted_reward += reward
             gamma_power *= cfg.gamma
             if terminated:
                 break
         agent.end_episode()
         episode_discounted_rewards.append(ep_discounted_reward)
+        episode_undiscounted_rewards.append(ep_undiscounted_reward)
         episode_deltas.append(ep_delta)
         episode_epsilons.append(agent.epsilon)
         if agent.last_episode_mean_alpha is not None:
@@ -233,6 +237,7 @@ def train(
 
     metrics: dict[str, list[float]] = {
         "discounted_return": episode_discounted_rewards,
+        "undiscounted_return": episode_undiscounted_rewards,
         "delta_q": episode_deltas,
         "epsilon": episode_epsilons,
     }

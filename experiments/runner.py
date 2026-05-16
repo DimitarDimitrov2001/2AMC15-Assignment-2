@@ -64,6 +64,7 @@ def _train_config(cfg: dict[str, Any], start_pos: tuple[int, int]) -> TrainConfi
         max_episode_length=cfg["max_episode_length"],
         theta=cfg["theta"],
         vi_max_iter=cfg["vi_max_iter"],
+        exploring_starts=cfg.get("exploring_starts", False),
     )
 
 
