@@ -12,6 +12,7 @@ from agents.learning_rates import build_lr_schedule
 from agents.mc_agent import MCAgent
 from agents.trainers.common import (
     OptimalActionSets,
+    Position,
     RewardFunction,
     TrainConfig,
     build_episode_iter,
@@ -42,11 +43,14 @@ def train(
     cfg: TrainConfig,
     *,
     optimal_policy: OptimalActionSets | None = None,
+    optimal_values: dict[Position, float] | None = None,
 ) -> tuple[MCAgent, TrainingHistory]:
     """Train an on-policy first-visit Monte Carlo agent on ``env``.
 
     When ``optimal_policy`` is provided, also records ``policy_diff`` per
     episode — fraction of optimal-policy states the agent disagrees with.
+    When ``optimal_values`` is provided, also records ``optimality_gap``
+    per episode — ``V*(start_state) - episode_discounted_return``.
     """
     if cfg.mc_episodes is None:
         raise ValueError("TrainConfig.mc_episodes is required for Monte Carlo")
@@ -90,6 +94,7 @@ def train(
     episode_alpha_mins: list[float] = []
     episode_alpha_maxs: list[float] = []
     episode_policy_diffs: list[float] = []
+    episode_optimality_gaps: list[float] = []
 
     schedule_has_global_rate = lr_schedule.get_global_rate() is not None
 
@@ -98,6 +103,7 @@ def train(
 
     for episode_idx in episode_iter:
         state = env.reset(agent_start_pos=pick_episode_start())
+        episode_start = state
         env.reward_fn = reward_fn
         agent.start_episode()
         ep_discounted_reward = 0.0
@@ -130,6 +136,10 @@ def train(
                 policy_disagreement_from_q_table(optimal_policy, agent.q_table)
             )
 
+        if optimal_values is not None:
+            v_star = optimal_values.get(episode_start, float("nan"))
+            episode_optimality_gaps.append(v_star - ep_discounted_reward)
+
         episode_num = episode_idx + 1
         if logger is not None and should_log(episode_num, log_interval, cfg.mc_episodes):
             agent.build_value_and_policy()
@@ -138,6 +148,11 @@ def train(
             mean_pdiff = (
                 mean_tail(episode_policy_diffs, log_interval)
                 if optimal_policy is not None
+                else None
+            )
+            mean_gap = (
+                mean_tail(episode_optimality_gaps, log_interval)
+                if optimal_values is not None
                 else None
             )
             logger.log_iteration(
@@ -150,6 +165,7 @@ def train(
                 current_epsilon=result.epsilon,
                 policy_diff=mean_pdiff,
                 discounted_return=mean_discounted,
+                optimality_gap=mean_gap,
                 env_grid=env.grid,
                 optimal_policy=optimal_policy,
                 agent_start_pos=cfg.start_pos,
@@ -173,6 +189,8 @@ def train(
         metrics["alpha_max"] = episode_alpha_maxs
     if optimal_policy is not None:
         metrics["policy_diff"] = episode_policy_diffs
+    if optimal_values is not None:
+        metrics["optimality_gap"] = episode_optimality_gaps
 
     history = TrainingHistory(
         episodes=list(range(1, len(episode_discounted_rewards) + 1)),
