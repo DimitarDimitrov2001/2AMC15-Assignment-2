@@ -14,16 +14,17 @@ def train(
     cfg: TrainConfig,
     *,
     optimal_policy: OptimalActionSets | None = None,
+    optimal_values: dict[tuple[int, int], float] | None = None,
 ) -> tuple[ValueIterationAgent, TrainingHistory | None]:
     """Run value iteration to convergence and return the agent plus history.
 
     VI is dynamic programming over the known grid model, so the loop does
     not interact with the environment after construction. The ``env``
-    argument is only used to read the grid array. ``optimal_policy`` is
-    accepted for trainer-dispatch uniformity but ignored — VI is the
-    reference policy itself.
+    argument is only used to read the grid array. ``optimal_policy`` and
+    ``optimal_values`` are accepted for trainer-dispatch uniformity but
+    ignored — VI is the reference itself.
     """
-    del optimal_policy
+    del optimal_policy, optimal_values
     agent = ValueIterationAgent(
         grid=env.grid,
         reward_fn=reward_fn,

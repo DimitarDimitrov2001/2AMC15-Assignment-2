@@ -497,11 +497,19 @@ def main() -> None:
             )
 
         optimal_policy = None
+        optimal_values = None
         if use_reference:
             vi_agent, _ = TRAINERS["value_iteration"](env, reward_fn, run_cfg)
             optimal_policy = vi_agent.optimal_action_sets()
+            optimal_values = dict(vi_agent.values)
 
-        agent, history = trainer(env, reward_fn, run_cfg, optimal_policy=optimal_policy)
+        agent, history = trainer(
+            env,
+            reward_fn,
+            run_cfg,
+            optimal_policy=optimal_policy,
+            optimal_values=optimal_values,
+        )
 
         metrics = evaluate_policy_metrics(
             grid=grid_path,

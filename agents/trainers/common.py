@@ -403,7 +403,7 @@ def save_run_artifacts(
     # VI's value/policy plot already covers its history; non-VI runs with
     # a captured history get training-curves PNGs.
     if history is not None and not isinstance(agent, ValueIterationAgent):
-        _PERFORMANCE_KEYS = {"discounted_return", "delta_q", "policy_diff"}
+        _PERFORMANCE_KEYS = {"discounted_return", "delta_q", "policy_diff", "optimality_gap"}
         # alpha_min / alpha_max are populated only by visit-count schedules,
         # where they capture the per-episode spread that mean alpha alone
         # conflates. For fixed-rate schedules they are absent and the trace
