@@ -36,7 +36,7 @@ Useful shared options (available on every subcommand):
 - `--no_gui`: disable rendering for faster training.
 - `--sigma`: stochasticity of the environment.
 - `--gamma`: discount factor.
-- `--max_steps`: max environment steps per training episode and per evaluation rollout.
+- `--eval_max_steps`: max environment steps per evaluation rollout. The per-training-episode step cap is `--max_episode_length` on each learning subcommand (see below).
 - `--eval_episodes`: number of evaluation rollouts to run after training.
 - `--fps`: GUI frame rate when rendering is enabled.
 - `--random_seed`: environment random seed.
@@ -61,18 +61,19 @@ groups (visible in `--help`):
 
 | Group | Flags | Notes |
 |---|---|---|
-| Episode budget | `--episodes`, `--max_episode_length` | `--max_episode_length` is exposed by `mc` and `off_policy_mc` only. |
+| Episode budget | `--episodes`, `--max_episode_length` | `--max_episode_length` caps per-training-episode steps for all three learning agents (default 500 for `q_learning`, 2000 for `mc` / `off_policy_mc`). Evaluation rollouts are capped separately via the shared `--eval_max_steps`. |
 | Learning rate (alpha) | `--alpha`, `--alpha_min`, `--alpha_decay`, `--lr_schedule`, `--visit_count_c` | See learning-rate schedule note below. |
 | Exploration (epsilon) | `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon` | `--fixed_epsilon` disables decay entirely. |
 | Q-table initialisation | `--q_init`, `--q_init_noise` | Per-state-action initial value plus uniform tie-breaking noise. |
 | Training log | `--log_interval`, `--log_q_table` | `--log_interval 0` disables console logging; W&B logging uses its own interval. |
+| Early stopping | `--policy-stable-patience` | Default 50. Stops training once the tied-greedy policy is unchanged for that many consecutive episodes; pass `0` or a negative value to disable. Honoured by `q_learning`, `mc`, and `off_policy_mc` only — VI uses its own delta-based convergence and `random` has no policy. |
 
 **Default-value table** (only the flags whose defaults differ between agents):
 
 | Flag | `q_learning` | `mc` | `off_policy_mc` |
 |---|---|---|---|
 | `--episodes` | 3000 | 5000 | 5000 |
-| `--max_episode_length` | n/a | 2000 | 2000 |
+| `--max_episode_length` | 500 | 2000 | 2000 |
 | `--alpha` / `--alpha_min` / `--alpha_decay` | 0.5 / 0.05 / 0.999 | 0.5 / 0.05 / 0.9995 | 0.2 / 0.02 / 0.9998 |
 | `--epsilon` / `--epsilon_min` / `--epsilon_decay` | 1.0 / 0.05 / 0.995 | 0.2 / 0.01 / 0.9995 | 0.3 / 0.02 / 0.9998 |
 
@@ -305,6 +306,6 @@ Manhattan reward):
 ```bash
 uv run python train.py value_iteration grid_configs/A1_grid.npy \
     --no_gui --start_pos 1,12 --sigma 0.02 --gamma 0.9 \
-    --theta 1e-6 --vi_max_iter 1000 --max_steps 1000 --eval_episodes 50 \
+    --theta 1e-6 --vi_max_iter 1000 --eval_max_steps 1000 --eval_episodes 50 \
     --out_dir results/vi_A1_low_stochasticity_sigma_0_02_gamma_0_9
 ```
