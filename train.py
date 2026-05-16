@@ -231,6 +231,23 @@ def _add_log_args(subparser: ArgumentParser) -> None:
     )
 
 
+def _add_stopping_args(subparser: ArgumentParser) -> None:
+    """Attach the early-stopping flags shared by tabular Q-table agents."""
+    group = subparser.add_argument_group("early stopping")
+    group.add_argument(
+        "--policy-stable-patience",
+        type=int,
+        default=50,
+        dest="policy_stable_patience",
+        help=(
+            "Stop training once the tied-greedy policy has been unchanged "
+            "for this many consecutive episodes. Pass 0 or a negative "
+            "value to disable the criterion and always run the full "
+            "episode budget. Default: 50."
+        ),
+    )
+
+
 def _add_training_starts_arg(subparser: ArgumentParser) -> None:
     """Attach the ``--exploring_starts`` flag for tabular Q-table agents.
 
@@ -290,6 +307,7 @@ def _add_tabular_agent_args(
     )
     _add_q_init_args(subparser)
     _add_log_args(subparser)
+    _add_stopping_args(subparser)
 
 
 def parse_args() -> Namespace:
@@ -390,6 +408,17 @@ def parse_args() -> Namespace:
     return parser.parse_args()
 
 
+def _resolve_policy_stable_patience(raw: int | None) -> int | None:
+    """Map a CLI patience value onto ``TrainConfig.policy_stable_patience``.
+
+    Treat ``None`` and any non-positive integer as "disabled"; positive
+    integers pass through unchanged.
+    """
+    if raw is None or raw <= 0:
+        return None
+    return raw
+
+
 def _config_from_args(args: Namespace) -> TrainConfig:
     """Materialise a TrainConfig from the parsed CLI args.
 
@@ -428,6 +457,9 @@ def _config_from_args(args: Namespace) -> TrainConfig:
         reward_function=getattr(args, "reward", "manhattan"),
         wandb=getattr(args, "wandb", False),
         wandb_project=getattr(args, "wandb_project", "rl-in-practice"),
+        policy_stable_patience=_resolve_policy_stable_patience(
+            getattr(args, "policy_stable_patience", None)
+        ),
     )
 
 

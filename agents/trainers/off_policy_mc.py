@@ -9,6 +9,7 @@ from agents.trainers.common import (
     Position,
     RewardFunction,
     TrainConfig,
+    _greedy_policy_from_q_table,
     build_episode_iter,
     build_episode_start_picker,
     build_logger,
@@ -103,6 +104,12 @@ def train(
     logger, log_interval = build_logger(cfg, cfg.mc_episodes)
     episode_iter = build_episode_iter(cfg.mc_episodes, logger, "Off-policy MC")
 
+    prev_greedy_policy: dict[Position, frozenset[int]] | None = None
+    stable_streak = 0
+    stopped_early = False
+    stop_episode = cfg.mc_episodes
+    last_logged_episode = 0
+
     for episode_idx in episode_iter:
         state = env.reset(agent_start_pos=pick_episode_start())
         episode_start = state
@@ -143,6 +150,13 @@ def train(
             v_star = optimal_values.get(episode_start, float("nan"))
             episode_optimality_gaps.append(v_star - ep_discounted_reward)
 
+        current_greedy = _greedy_policy_from_q_table(agent.q_table)
+        if prev_greedy_policy is not None and current_greedy == prev_greedy_policy:
+            stable_streak += 1
+        else:
+            stable_streak = 0
+        prev_greedy_policy = current_greedy
+
         episode_num = episode_idx + 1
         if logger is not None and should_log(episode_num, log_interval, cfg.mc_episodes):
             agent.build_value_and_policy()
@@ -175,7 +189,45 @@ def train(
                 agent_values=agent.values,
                 agent_policy=agent.policy,
             )
+            last_logged_episode = episode_num
 
+        if (
+            cfg.policy_stable_patience is not None
+            and stable_streak >= cfg.policy_stable_patience
+        ):
+            stopped_early = True
+            stop_episode = episode_num
+            if logger is not None and last_logged_episode != episode_num:
+                agent.build_value_and_policy()
+                logger.log_iteration(
+                    episode=episode_num,
+                    q_values=q_table_as_array(agent.q_table),
+                    q_delta=result.delta_q,
+                    mean_q_delta=mean_tail(episode_deltas, log_interval),
+                    converged=True,
+                    current_alpha=result.alpha,
+                    current_epsilon=result.epsilon,
+                    policy_diff=(
+                        mean_tail(episode_policy_diffs, log_interval)
+                        if optimal_policy is not None
+                        else None
+                    ),
+                    discounted_return=mean_tail(episode_discounted_rewards, log_interval),
+                    optimality_gap=(
+                        mean_tail(episode_optimality_gaps, log_interval)
+                        if optimal_values is not None
+                        else None
+                    ),
+                    env_grid=env.grid,
+                    optimal_policy=optimal_policy,
+                    agent_start_pos=cfg.start_pos,
+                    agent_values=agent.values,
+                    agent_policy=agent.policy,
+                )
+            break
+
+    if not stopped_early:
+        stop_episode = len(episode_discounted_rewards)
     restore_eval_start(env, cfg)
     agent.build_value_and_policy()
 
@@ -216,6 +268,11 @@ def train(
             "log_interval": log_interval,
             "log_q_table": cfg.log_q_table,
             "exploring_starts": cfg.exploring_starts,
+            "policy_stable_patience": cfg.policy_stable_patience,
+        },
+        metadata={
+            "stopped_early": stopped_early,
+            "stop_episode": stop_episode,
         },
     )
     return agent, history
