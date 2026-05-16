@@ -66,6 +66,7 @@ groups (visible in `--help`):
 | Exploration (epsilon) | `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon` | `--fixed_epsilon` disables decay entirely. |
 | Q-table initialisation | `--q_init`, `--q_init_noise` | Per-state-action initial value plus uniform tie-breaking noise. |
 | Training log | `--log_interval`, `--log_q_table` | `--log_interval 0` disables console logging; W&B logging uses its own interval. |
+| Early stopping | `--policy-stable-patience` | Default 50. Stops training once the tied-greedy policy is unchanged for that many consecutive episodes; pass `0` or a negative value to disable. Honoured by `q_learning`, `mc`, and `off_policy_mc` only — VI uses its own delta-based convergence and `random` has no policy. |
 
 **Default-value table** (only the flags whose defaults differ between agents):
 
