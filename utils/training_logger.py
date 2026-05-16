@@ -39,6 +39,7 @@ class TrainingLogger(ABC):
         mean_q_delta: float | None = None,
         policy_diff: float | None = None,
         discounted_return: float | None = None,
+        optimality_gap: float | None = None,
         env_grid: np.ndarray | None = None,
         optimal_policy: dict | None = None,
         agent_start_pos: tuple[int, int] | None = None,
@@ -89,6 +90,7 @@ class ConsoleTrainingLogger(TrainingLogger):
         mean_q_delta: float | None = None,
         policy_diff: float | None = None,
         discounted_return: float | None = None,
+        optimality_gap: float | None = None,
         env_grid: np.ndarray | None = None,
         optimal_policy: dict | None = None,
         agent_start_pos: tuple[int, int] | None = None,
@@ -105,6 +107,7 @@ class ConsoleTrainingLogger(TrainingLogger):
             mean_q_delta=mean_q_delta,
             policy_diff=policy_diff,
             discounted_return=discounted_return,
+            optimality_gap=optimality_gap,
         )
 
         if self._show_q_table:
@@ -122,6 +125,7 @@ class ConsoleTrainingLogger(TrainingLogger):
         mean_q_delta: float | None,
         policy_diff: float | None,
         discounted_return: float | None,
+        optimality_gap: float | None,
     ) -> str:
         parts = [
             "Episode: %d" % episode,
@@ -137,6 +141,8 @@ class ConsoleTrainingLogger(TrainingLogger):
             parts.append("G_0: %.4f" % discounted_return)
         if policy_diff is not None:
             parts.append("policy_diff: %.4f" % policy_diff)
+        if optimality_gap is not None:
+            parts.append("opt_gap: %.4f" % optimality_gap)
         parts.append("converged: %s" % converged)
         return " | ".join(parts)
 
@@ -195,6 +201,7 @@ class WandbTrainingLogger(TrainingLogger):
         mean_q_delta: float | None = None,
         policy_diff: float | None = None,
         discounted_return: float | None = None,
+        optimality_gap: float | None = None,
         env_grid: np.ndarray | None = None,
         optimal_policy: dict | None = None,
         agent_start_pos: tuple[int, int] | None = None,
@@ -204,8 +211,8 @@ class WandbTrainingLogger(TrainingLogger):
         import wandb
         from utils.rl_plots import plot_value_and_policy, plot_policy_disagreement
         import matplotlib.pyplot as plt
-        
-        metrics = {
+
+        metrics: dict[str, object] = {
             "episode": episode,
             "max_dQ": q_delta,
         }
@@ -219,6 +226,8 @@ class WandbTrainingLogger(TrainingLogger):
             metrics["discounted_return"] = discounted_return
         if policy_diff is not None:
             metrics["policy_diff"] = policy_diff
+        if optimality_gap is not None:
+            metrics["optimality_gap"] = optimality_gap
             
         # Generate live plots if we have the necessary data
         if env_grid is not None and agent_values is not None and agent_policy is not None:

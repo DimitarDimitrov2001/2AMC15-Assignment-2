@@ -2,13 +2,15 @@
 
 All trainers share the signature::
 
-    train(env, reward_fn, cfg, *, optimal_policy=None)
+    train(env, reward_fn, cfg, *, optimal_policy=None, optimal_values=None)
         -> tuple[BaseAgent, TrainingHistory | None]
 
 The ``optimal_policy`` keyword argument is optional and, when set, lets
 QL and MC record a per-episode policy-disagreement metric against the
-reference policy (typically VI's). VI and the random baseline accept
-the argument for dispatch uniformity but ignore it.
+reference policy (typically VI's). The ``optimal_values`` argument plays
+the same role for the per-episode optimality-gap metric
+(``V*(start_state) - episode_discounted_return``). VI and the random
+baseline accept both arguments for dispatch uniformity but ignore them.
 
 Callers select a trainer by agent name through the ``TRAINERS`` dict.
 """
@@ -46,6 +48,7 @@ class TrainerFn(Protocol):
         cfg: TrainConfig,
         *,
         optimal_policy: OptimalActionSets | None = None,
+        optimal_values: dict[tuple[int, int], float] | None = None,
     ) -> tuple[BaseAgent, TrainingHistory | None]: ...
 
 

@@ -5,7 +5,7 @@ Usage:
 
 The first positional argument selects the agent. Each agent has its own
 subparser exposing only the flags it needs. Shared flags (sigma, gamma,
-max_steps, ...) live on a parent parser used by all subcommands.
+eval_max_steps, ...) live on a parent parser used by all subcommands.
 """
 
 from __future__ import annotations
@@ -51,7 +51,16 @@ def _build_shared_parser() -> ArgumentParser:
     env.add_argument("--fps", type=int, default=30, help="GUI frame rate (ignored with --no_gui).")
     env.add_argument("--sigma", type=float, default=0.1, help="Environment stochasticity.")
     env.add_argument("--gamma", type=float, default=0.9, help="Discount factor.")
-    env.add_argument("--max_steps", type=int, default=500, help="Max env steps per episode/rollout.")
+    env.add_argument(
+        "--eval_max_steps",
+        type=int,
+        default=500,
+        help=(
+            "Max env steps per evaluation rollout (post-training). Training "
+            "episode length is controlled by --max_episode_length on each "
+            "learning subcommand."
+        ),
+    )
     env.add_argument("--eval_episodes", type=int, default=20, help="Number of evaluation rollouts.")
     env.add_argument("--random_seed", type=int, default=0, help="Random seed for the environment.")
     env.add_argument("--start_pos", type=str, default=None, help="Agent start position as col,row.")
@@ -231,6 +240,23 @@ def _add_log_args(subparser: ArgumentParser) -> None:
     )
 
 
+def _add_stopping_args(subparser: ArgumentParser) -> None:
+    """Attach the early-stopping flags shared by tabular Q-table agents."""
+    group = subparser.add_argument_group("early stopping")
+    group.add_argument(
+        "--policy-stable-patience",
+        type=int,
+        default=1000,
+        dest="policy_stable_patience",
+        help=(
+            "Stop training once the tied-greedy policy has been unchanged "
+            "for this many consecutive episodes. Pass 0 or a negative "
+            "value to disable the criterion and always run the full "
+            "episode budget. Default: 50."
+        ),
+    )
+
+
 def _add_training_starts_arg(subparser: ArgumentParser) -> None:
     """Attach the ``--exploring_starts`` flag for tabular Q-table agents.
 
@@ -290,6 +316,7 @@ def _add_tabular_agent_args(
     )
     _add_q_init_args(subparser)
     _add_log_args(subparser)
+    _add_stopping_args(subparser)
 
 
 def parse_args() -> Namespace:
@@ -309,7 +336,7 @@ def parse_args() -> Namespace:
     _add_tabular_agent_args(
         ql,
         default_episodes=3000,
-        default_max_episode_length=None,
+        default_max_episode_length=500,
         default_alpha=0.5,
         default_alpha_min=0.05,
         default_alpha_decay=0.999,
@@ -390,6 +417,17 @@ def parse_args() -> Namespace:
     return parser.parse_args()
 
 
+def _resolve_policy_stable_patience(raw: int | None) -> int | None:
+    """Map a CLI patience value onto ``TrainConfig.policy_stable_patience``.
+
+    Treat ``None`` and any non-positive integer as "disabled"; positive
+    integers pass through unchanged.
+    """
+    if raw is None or raw <= 0:
+        return None
+    return raw
+
+
 def _config_from_args(args: Namespace) -> TrainConfig:
     """Materialise a TrainConfig from the parsed CLI args.
 
@@ -399,7 +437,7 @@ def _config_from_args(args: Namespace) -> TrainConfig:
     return TrainConfig(
         sigma=args.sigma,
         gamma=args.gamma,
-        max_steps=args.max_steps,
+        eval_max_steps=args.eval_max_steps,
         random_seed=args.random_seed,
         eval_episodes=args.eval_episodes,
         start_pos=parse_start_pos(args.start_pos),
@@ -428,6 +466,9 @@ def _config_from_args(args: Namespace) -> TrainConfig:
         reward_function=getattr(args, "reward", "manhattan"),
         wandb=getattr(args, "wandb", False),
         wandb_project=getattr(args, "wandb_project", "rl-in-practice"),
+        policy_stable_patience=_resolve_policy_stable_patience(
+            getattr(args, "policy_stable_patience", None)
+        ),
     )
 
 
@@ -442,7 +483,7 @@ def main() -> None:
     trainer = TRAINERS[args.agent]
     # --compare_optimal is only meaningful for agents that learn a policy
     # mid-training. VI is the reference itself; random has no policy.
-    use_reference = bool(getattr(args, "compare_optimal", True)) and args.agent in {
+    use_reference = args.compare_optimal and args.agent in {
         "q_learning",
         "mc",
         "off_policy_mc",
@@ -497,16 +538,24 @@ def main() -> None:
             )
 
         optimal_policy = None
+        optimal_values = None
         if use_reference:
             vi_agent, _ = TRAINERS["value_iteration"](env, reward_fn, run_cfg)
             optimal_policy = vi_agent.optimal_action_sets()
+            optimal_values = dict(vi_agent.values)
 
-        agent, history = trainer(env, reward_fn, run_cfg, optimal_policy=optimal_policy)
+        agent, history = trainer(
+            env,
+            reward_fn,
+            run_cfg,
+            optimal_policy=optimal_policy,
+            optimal_values=optimal_values,
+        )
 
         metrics = evaluate_policy_metrics(
             grid=grid_path,
             agent=agent,
-            max_steps=run_cfg.max_steps,
+            eval_max_steps=run_cfg.eval_max_steps,
             sigma=run_cfg.sigma,
             agent_start_pos=initial_pos,
             reward_fn=reward_fn,

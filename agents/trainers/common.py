@@ -53,7 +53,7 @@ class TrainConfig:
 
     sigma: float
     gamma: float
-    max_steps: int
+    eval_max_steps: int
     random_seed: int
     eval_episodes: int
     start_pos: Position | None = None
@@ -82,6 +82,14 @@ class TrainConfig:
     reward_function: str = "manhattan"
     wandb: bool = False
     wandb_project: str = "rl-in-practice"
+    # Number of consecutive episodes whose tied-greedy policy must be
+    # unchanged before the trainer breaks out of the episode loop.
+    # ``None`` (or any non-positive int mapped to ``None`` by the CLI)
+    # disables the criterion and runs the full episode budget. Honoured
+    # only by trainers that learn an episode-by-episode policy (QL,
+    # on-policy MC, off-policy MC); VI and the random baseline ignore
+    # it.
+    policy_stable_patience: int | None = 50
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +183,37 @@ def validate_log_interval(cfg: TrainConfig) -> None:
     """Raise if ``cfg.log_interval`` is negative."""
     if cfg.log_interval < 0:
         raise ValueError("TrainConfig.log_interval must be >= 0")
+
+
+# Absolute tolerance under which two Q-values are treated as a greedy
+# tie. Tight enough to keep genuinely preferred actions distinct (every
+# alpha-scaled update moves a Q-value by orders of magnitude more than
+# this) while still absorbing IEEE-754 round-off so otherwise-equal
+# actions don't flip-flop the tied-greedy set between episodes. Mirrors
+# the absolute-tolerance scheme used by
+# :meth:`ValueIterationAgent.optimal_action_sets`, which gates the
+# reference policy with ``10 * theta``.
+_POLICY_TIE_TOL: float = 1e-9
+
+
+def _greedy_policy_from_q_table(
+    q_table: QTable, tol: float = _POLICY_TIE_TOL,
+) -> dict[Position, frozenset[int]]:
+    """Per-state set of tied-greedy actions derived from a learned Q-table.
+
+    Two actions count as tied when their Q-values differ by no more than
+    ``tol``. Matches the semantics of
+    :meth:`ValueIterationAgent.optimal_action_sets` so the policy-stable
+    stopping criterion treats a state as unchanged iff the same set of
+    (approximately) best actions still wins.
+    """
+    result: dict[Position, frozenset[int]] = {}
+    for state, q_values in q_table.items():
+        v_max = float(np.max(q_values))
+        result[state] = frozenset(
+            int(action) for action, q in enumerate(q_values) if v_max - float(q) <= tol
+        )
+    return result
 
 
 def policy_disagreement_from_q_table(
@@ -403,7 +442,7 @@ def save_run_artifacts(
     # VI's value/policy plot already covers its history; non-VI runs with
     # a captured history get training-curves PNGs.
     if history is not None and not isinstance(agent, ValueIterationAgent):
-        _PERFORMANCE_KEYS = {"discounted_return", "delta_q", "policy_diff"}
+        _PERFORMANCE_KEYS = {"discounted_return", "delta_q", "policy_diff", "optimality_gap"}
         # alpha_min / alpha_max are populated only by visit-count schedules,
         # where they capture the per-episode spread that mean alpha alone
         # conflates. For fixed-rate schedules they are absent and the trace
@@ -452,7 +491,7 @@ def save_run_artifacts(
     Environment.evaluate_agent(
         grid_fp=grid_path,
         agent=agent,
-        max_steps=cfg.max_steps,
+        max_steps=cfg.eval_max_steps,
         sigma=cfg.sigma,
         agent_start_pos=initial_pos,
         reward_fn=reward_fn,
