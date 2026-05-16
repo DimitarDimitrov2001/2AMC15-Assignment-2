@@ -11,7 +11,7 @@ from world import Environment
 def evaluate_policy_metrics(
     grid: Path,
     agent: Any,
-    max_steps: int,
+    eval_max_steps: int,
     sigma: float,
     agent_start_pos: tuple[int, int],
     reward_fn,
@@ -43,7 +43,7 @@ def evaluate_policy_metrics(
         undiscounted_return = 0.0
         terminated = False
 
-        for step_idx in range(max_steps):
+        for step_idx in range(eval_max_steps):
             action = agent.take_action(state)
             state, reward, terminated, _ = env.step(action)
             undiscounted_return += reward
@@ -59,7 +59,7 @@ def evaluate_policy_metrics(
     success_lengths = [length for length, success in zip(episode_lengths, successes, strict=True) if success]
     return {
         "n_eval_episodes": n_eval_episodes,
-        "max_steps": max_steps,
+        "eval_max_steps": eval_max_steps,
         "success_rate": sum(successes) / n_eval_episodes,
         "mean_discounted_return": sum(discounted_returns) / n_eval_episodes,
         "mean_undiscounted_return": sum(undiscounted_returns) / n_eval_episodes,

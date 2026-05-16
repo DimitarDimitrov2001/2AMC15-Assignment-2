@@ -39,7 +39,7 @@ def save_evaluation_summary_artifact(
     summary_lines = [
         "Evaluation summary",
         f"episodes: {evaluation_metrics['n_eval_episodes']}",
-        f"max_steps_per_episode: {evaluation_metrics['max_steps']}",
+        f"max_steps_per_episode: {evaluation_metrics['eval_max_steps']}",
         f"success_rate: {evaluation_metrics['success_rate']:.3f}",
         f"mean_discounted_return: {evaluation_metrics['mean_discounted_return']:.3f}",
         f"mean_undiscounted_return: {evaluation_metrics['mean_undiscounted_return']:.3f}",
