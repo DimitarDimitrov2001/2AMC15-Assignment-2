@@ -46,7 +46,7 @@ def _train_config(cfg: dict[str, Any], start_pos: tuple[int, int]) -> TrainConfi
     return TrainConfig(
         sigma=cfg["sigma"],
         gamma=cfg["gamma"],
-        max_steps=cfg["max_steps"],
+        eval_max_steps=cfg["eval_max_steps"],
         random_seed=cfg["random_seed"],
         eval_episodes=cfg["eval_episodes"],
         start_pos=start_pos,
@@ -139,7 +139,7 @@ def run_one(
     metrics = evaluate_policy_metrics(
         grid=case.grid_path,
         agent=agent,
-        max_steps=cfg["max_steps"],
+        eval_max_steps=cfg["eval_max_steps"],
         sigma=cfg["sigma"],
         agent_start_pos=start_pos,
         reward_fn=reward_fn,

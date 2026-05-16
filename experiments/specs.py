@@ -18,7 +18,7 @@ DEFAULTS: dict[str, Any] = {
     "sigma": 0.02,
     "gamma": 0.9,
     "eval_episodes": 50,
-    "max_steps": 1000,
+    "eval_max_steps": 1000,
     "random_seed": 0,
     "alpha": 0.2,
     "alpha_min": 0.01,
@@ -38,7 +38,7 @@ DEFAULTS: dict[str, Any] = {
 
 QUICK_OVERRIDES: dict[str, Any] = {
     "eval_episodes": 2,
-    "max_steps": 100,
+    "eval_max_steps": 100,
     "ql_episodes": 40,
     "mc_episodes": 40,
     "max_episode_length": 100,

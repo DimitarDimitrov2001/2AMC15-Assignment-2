@@ -53,7 +53,7 @@ class TrainConfig:
 
     sigma: float
     gamma: float
-    max_steps: int
+    eval_max_steps: int
     random_seed: int
     eval_episodes: int
     start_pos: Position | None = None
@@ -491,7 +491,7 @@ def save_run_artifacts(
     Environment.evaluate_agent(
         grid_fp=grid_path,
         agent=agent,
-        max_steps=cfg.max_steps,
+        max_steps=cfg.eval_max_steps,
         sigma=cfg.sigma,
         agent_start_pos=initial_pos,
         reward_fn=reward_fn,

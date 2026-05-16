@@ -5,7 +5,7 @@ Usage:
 
 The first positional argument selects the agent. Each agent has its own
 subparser exposing only the flags it needs. Shared flags (sigma, gamma,
-max_steps, ...) live on a parent parser used by all subcommands.
+eval_max_steps, ...) live on a parent parser used by all subcommands.
 """
 
 from __future__ import annotations
@@ -51,7 +51,16 @@ def _build_shared_parser() -> ArgumentParser:
     env.add_argument("--fps", type=int, default=30, help="GUI frame rate (ignored with --no_gui).")
     env.add_argument("--sigma", type=float, default=0.1, help="Environment stochasticity.")
     env.add_argument("--gamma", type=float, default=0.9, help="Discount factor.")
-    env.add_argument("--max_steps", type=int, default=500, help="Max env steps per episode/rollout.")
+    env.add_argument(
+        "--eval_max_steps",
+        type=int,
+        default=500,
+        help=(
+            "Max env steps per evaluation rollout (post-training). Training "
+            "episode length is controlled by --max_episode_length on each "
+            "learning subcommand."
+        ),
+    )
     env.add_argument("--eval_episodes", type=int, default=20, help="Number of evaluation rollouts.")
     env.add_argument("--random_seed", type=int, default=0, help="Random seed for the environment.")
     env.add_argument("--start_pos", type=str, default=None, help="Agent start position as col,row.")
@@ -237,7 +246,7 @@ def _add_stopping_args(subparser: ArgumentParser) -> None:
     group.add_argument(
         "--policy-stable-patience",
         type=int,
-        default=50,
+        default=1000,
         dest="policy_stable_patience",
         help=(
             "Stop training once the tied-greedy policy has been unchanged "
@@ -327,7 +336,7 @@ def parse_args() -> Namespace:
     _add_tabular_agent_args(
         ql,
         default_episodes=3000,
-        default_max_episode_length=None,
+        default_max_episode_length=500,
         default_alpha=0.5,
         default_alpha_min=0.05,
         default_alpha_decay=0.999,
@@ -428,7 +437,7 @@ def _config_from_args(args: Namespace) -> TrainConfig:
     return TrainConfig(
         sigma=args.sigma,
         gamma=args.gamma,
-        max_steps=args.max_steps,
+        eval_max_steps=args.eval_max_steps,
         random_seed=args.random_seed,
         eval_episodes=args.eval_episodes,
         start_pos=parse_start_pos(args.start_pos),
@@ -546,7 +555,7 @@ def main() -> None:
         metrics = evaluate_policy_metrics(
             grid=grid_path,
             agent=agent,
-            max_steps=run_cfg.max_steps,
+            eval_max_steps=run_cfg.eval_max_steps,
             sigma=run_cfg.sigma,
             agent_start_pos=initial_pos,
             reward_fn=reward_fn,

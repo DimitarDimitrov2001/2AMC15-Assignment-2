@@ -25,6 +25,8 @@ from agents.trainers.common import (
 from utils.plotting import TrainingHistory
 from world import Environment
 
+_DEFAULT_MAX_EPISODE_LENGTH = 500
+
 
 def train(
     env: Environment,
@@ -50,6 +52,10 @@ def train(
     validate_log_interval(cfg)
 
     pick_episode_start = build_episode_start_picker(env, cfg)
+
+    max_episode_length = (
+        cfg.max_episode_length if cfg.max_episode_length is not None else _DEFAULT_MAX_EPISODE_LENGTH
+    )
 
     lr_schedule = build_lr_schedule(
         cfg.lr_schedule,
@@ -100,7 +106,7 @@ def train(
         ep_discounted_reward = 0.0
         ep_delta = 0.0
         gamma_power = 1.0
-        for _ in range(cfg.max_steps):
+        for _ in range(max_episode_length):
             action = agent.take_action(state)
             next_state, reward, terminated, _info = env.step(action)
             previous_state = agent._last_state
@@ -250,6 +256,7 @@ def train(
             "epsilon_decay": cfg.epsilon_decay,
             "gamma": cfg.gamma,
             "sigma": cfg.sigma,
+            "max_episode_length": max_episode_length,
             "q_init": cfg.q_init,
             "q_init_noise": cfg.q_init_noise,
             "log_interval": log_interval,
