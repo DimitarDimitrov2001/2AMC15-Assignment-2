@@ -15,25 +15,28 @@ DEFAULT_GRIDS = (
 )
 
 DEFAULTS: dict[str, Any] = {
-    "sigma": 0.02,
-    "gamma": 0.9,
+    "sigma": 0,
+    "gamma": 0.99,
     "eval_episodes": 50,
     "eval_max_steps": 1000,
     "random_seed": 0,
+    "reward_function": "basic",
+    "exploring_starts": True,
     "alpha": 0.2,
     "alpha_min": 0.01,
     "alpha_decay": 0.9995,
-    "lr_schedule": "exponential",
-    "visit_count_c": 1.0,
-    "epsilon": 0.2,
-    "epsilon_min": 0.01,
-    "epsilon_decay": 0.9995,
+    "lr_schedule": "visit_count",
+    "visit_count_c": 50,
+    "epsilon": 0.7,
+    "epsilon_min": 0.05,
+    "epsilon_decay": 0.99995,
     "fixed_epsilon": False,
-    "ql_episodes": 10000,
-    "mc_episodes": 10000,
-    "max_episode_length": 2000,
+    "ql_episodes": 100000,
+    "mc_episodes": 100000,
+    "max_episode_length": 1500,
     "theta": 1e-6,
     "vi_max_iter": 1000,
+    "policy_stable_patience": 1000,
 }
 
 QUICK_OVERRIDES: dict[str, Any] = {
@@ -103,9 +106,16 @@ def defaults(*, quick: bool = False) -> dict[str, Any]:
 
 
 def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[ExperimentCase]:
-    """Build the six assignment setup groups."""
+    """Build the assignment setup groups."""
     primary_grid = grids[0]
-    cases: list[ExperimentCase] = []
+    cases: list[ExperimentCase] = [
+        ExperimentCase(
+            group="default",
+            condition="default",
+            grid_path=primary_grid,
+            overrides={},
+        )
+    ]
 
     for grid in grids:
         cases.append(
