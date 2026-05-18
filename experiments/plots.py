@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 from experiments.runner import RunResult
 from utils.rl_plots import (
@@ -35,6 +36,7 @@ ALGO_COLORS = {
 PLOT_DIRS = {
     "learning_curves": "learning_curves",
     "combined_learning_curves": "combined_learning_curves",
+    "combined_policy_diff_curves": "combined_policy_diff_curves",
     "vi_convergence": "vi_convergence",
     "value_policy": "value_policy",
     "policy_disagreement": "policy_disagreement",
@@ -44,6 +46,137 @@ LEARNING_CURVE_SMOOTHING_WINDOW = 500
 LEARNING_CURVE_METRICS = ["undiscounted_return", "delta_q", "policy_diff"]
 LEARNING_ALGORITHMS = {"mc", "q_learning"}
 LINE_STYLES = ["-", "--", ":", "-.", (0, (5, 2)), (0, (3, 1, 1, 1))]
+
+METRIC_TITLES = {
+    "undiscounted_return": "Undiscounted Return",
+    "delta_q": "Q-value Change",
+    "policy_diff": "Policy Difference (%)",
+}
+
+GROUP_TITLES = {
+    "default": "Default Configuration",
+    "grid_comparison": "Grid Comparison",
+    "discount_factor": "Discount Factor",
+    "stochasticity": "Stochasticity",
+    "exploration_epsilon": "Exploration (Epsilon)",
+    "learning_rate": "Learning Rate",
+    "mc_episode_length": "MC Episode Length",
+}
+
+GRID_TITLES = {
+    "A1_grid": "A1 grid",
+    "super_hard": "Super-hard grid",
+}
+
+CONDITION_TITLES = {
+    "default": "default configuration",
+    "low_fixed_epsilon": "low fixed epsilon",
+    "high_fixed_epsilon": "high fixed epsilon",
+    "decaying_epsilon": "decaying epsilon",
+    "low_fixed_alpha": "low fixed alpha",
+    "high_fixed_alpha": "high fixed alpha",
+    "decaying_alpha": "decaying alpha",
+    "visit_count": "visit-count schedule",
+}
+
+
+def _pretty_grid(grid: str) -> str:
+    """Human-readable grid name."""
+    if grid in GRID_TITLES:
+        return GRID_TITLES[grid]
+    return grid.replace("_", " ").strip().capitalize()
+
+
+def _pretty_condition(group: str, condition: str) -> str:
+    """Human-readable condition label for a (group, condition) pair."""
+    if condition in CONDITION_TITLES:
+        return CONDITION_TITLES[condition]
+    if "=" in condition:
+        key, _, value = condition.partition("=")
+        return f"{key.strip()} = {value.strip()}"
+    if group == "grid_comparison":
+        return _pretty_grid(condition)
+    return condition.replace("_", " ")
+
+
+# Maps (group, condition) to a short hyperparameter label drawn near the curve
+# or as the legend title on per-scene figures. Values mirror the hard-coded
+# overrides in experiments.specs.build_cases; keeping the mapping here avoids
+# a runtime dependency on RunResult.row inside the figure builders.
+_GREEK_LETTERS = {
+    "alpha": "\u03b1",
+    "gamma": "\u03b3",
+    "sigma": "\u03c3",
+    "epsilon": "\u03b5",
+}
+
+_HYPERPARAM_LABELS: dict[tuple[str, str], str] = {
+    ("exploration_epsilon", "low_fixed_epsilon"): "\u03b5=0.1 (fixed)",
+    ("exploration_epsilon", "high_fixed_epsilon"): "\u03b5=0.5 (fixed)",
+    ("exploration_epsilon", "decaying_epsilon"): "\u03b5: 1.0\u21920.01 decay",
+    ("learning_rate", "low_fixed_alpha"): "\u03b1=0.1 (const)",
+    ("learning_rate", "high_fixed_alpha"): "\u03b1=0.5 (const)",
+    ("learning_rate", "decaying_alpha"): "\u03b1: 0.5\u21920.01 exp",
+    ("learning_rate", "visit_count"): "\u03b1 visit-count (c=10)",
+}
+
+
+def _hyperparam_annotation(group: str, condition: str) -> str:
+    """Short label describing the hyperparameter setting for ``condition``.
+
+    Returns an empty string for the ``default`` group (nothing to annotate).
+    """
+    if group == "default":
+        return ""
+    key = (group, condition)
+    if key in _HYPERPARAM_LABELS:
+        return _HYPERPARAM_LABELS[key]
+    if group == "grid_comparison":
+        return _pretty_grid(condition)
+    if group == "mc_episode_length" and condition.startswith("max_episode_length="):
+        return f"T_max={condition.split('=', 1)[1]}"
+    if "=" in condition:
+        key_name, _, value = condition.partition("=")
+        symbol = _GREEK_LETTERS.get(key_name.strip(), key_name.strip())
+        return f"{symbol}={value.strip()}"
+    return condition.replace("_", " ")
+
+
+def _pretty_scene_title(
+    group: str,
+    grid: str | None = None,
+    *,
+    condition: str | None = None,
+    seed: int | None = None,
+    all_seeds: bool = False,
+    descriptor: str | None = None,
+) -> str:
+    """Build a human-readable figure suptitle.
+
+    ``descriptor`` is an optional middle clause such as
+    ``"algorithm and condition comparison"``. ``condition`` is appended when set
+    (used by per-scene plots that pin a specific condition). ``grid`` may be
+    omitted for figures that span multiple grids (e.g. grid comparison plots).
+    """
+    head = GROUP_TITLES.get(group, group.replace("_", " ").title())
+    parts: list[str] = [head]
+    middle_segments: list[str] = []
+    if condition is not None:
+        middle_segments.append(_pretty_condition(group, condition))
+    if descriptor:
+        middle_segments.append(descriptor)
+    if middle_segments:
+        parts.append(": " + ", ".join(middle_segments))
+    paren_segments: list[str] = []
+    if grid is not None:
+        paren_segments.append(_pretty_grid(grid))
+    if all_seeds:
+        paren_segments.append("all seeds")
+    elif seed is not None:
+        paren_segments.append(f"seed={seed}")
+    if paren_segments:
+        parts.append(f" ({', '.join(paren_segments)})")
+    return "".join(parts)
 
 
 def _slug(text: str) -> str:
@@ -129,13 +262,22 @@ def _smoothed_metric_matrix(
 def _save_combined_curve_figure(
     curves: list[dict[str, Any]],
     *,
+    group: str,
     title: str,
     path: Path,
     show_std: bool,
+    metrics_filter: list[str] | None = None,
 ) -> None:
+    """Render the combined learning-curve figure in a 1xN horizontal layout.
+
+    ``metrics_filter`` restricts which metrics get plotted (e.g. a single-metric
+    policy_diff variant). ``group`` is needed so per-curve hyperparameter
+    annotations can be derived from the (group, condition) pair.
+    """
+    desired_metrics = metrics_filter or LEARNING_CURVE_METRICS
     available_metrics = [
         metric
-        for metric in LEARNING_CURVE_METRICS
+        for metric in desired_metrics
         if any(
             metric in (history.get("metrics") or {})
             for curve in curves
@@ -145,15 +287,24 @@ def _save_combined_curve_figure(
     if not available_metrics:
         return
 
-    fig, axes = plt.subplots(
-        len(available_metrics),
-        1,
-        figsize=(9, 3 * len(available_metrics)),
-        constrained_layout=False,
-    )
-    if len(available_metrics) == 1:
+    n_metrics = len(available_metrics)
+    if n_metrics == 1:
+        figsize = (5.8, 3.8)
+        right_margin = 0.82
+    else:
+        figsize = (4.5 * n_metrics, 3.6)
+        right_margin = 0.96
+    fig, axes = plt.subplots(1, n_metrics, figsize=figsize, constrained_layout=False)
+    if n_metrics == 1:
         axes = [axes]
+    else:
+        axes = list(axes)
 
+    algos_in_figure: list[str] = []
+    # Track conditions in their first-seen order, with their assigned linestyle,
+    # so the bottom legend can show one entry per condition mapped to its
+    # linestyle and hyperparameter label.
+    condition_styles: dict[str, Any] = {}
     for ax, metric in zip(axes, available_metrics):
         for curve in curves:
             matrix_data = _smoothed_metric_matrix(curve["histories"], metric)
@@ -161,12 +312,12 @@ def _save_combined_curve_figure(
                 continue
             episodes, matrix = matrix_data
             mu = matrix.mean(axis=0)
-            color = ALGO_COLORS[curve["algorithm"]]
+            algorithm = curve["algorithm"]
+            color = ALGO_COLORS[algorithm]
             linestyle = curve["linestyle"]
             ax.plot(
                 episodes,
                 mu,
-                label=curve["label"],
                 color=color,
                 linestyle=linestyle,
                 linewidth=1.4,
@@ -181,26 +332,166 @@ def _save_combined_curve_figure(
                     alpha=0.10,
                     linewidth=0,
                 )
+            if algorithm not in algos_in_figure:
+                algos_in_figure.append(algorithm)
+            condition = curve["condition"]
+            if condition not in condition_styles:
+                condition_styles[condition] = linestyle
 
-        ax.set_xlabel("Episode")
-        ax.set_ylabel(metric)
+        ax.set_title(METRIC_TITLES.get(metric, metric), fontsize=10)
         ax.grid(alpha=0.25)
 
-    fig.suptitle(title, fontsize=10)
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
-        fig.legend(
-            handles,
-            labels,
-            loc="center left",
-            bbox_to_anchor=(0.82, 0.5),
-            fontsize=8,
-            frameon=True,
+    fig.suptitle(title, fontsize=11)
+
+    algos_present = [a for a in sorted(LEARNING_ALGORITHMS) if a in algos_in_figure]
+    algo_handles = [
+        Line2D([0], [0], color=ALGO_COLORS[a], lw=1.8, label=ALGO_LABELS[a])
+        for a in algos_present
+    ]
+
+    # Build condition handles using each condition's linestyle in a neutral
+    # color so the line icon (style) is what carries meaning, not the color.
+    # Labels are the hyperparameter strings (e.g. "alpha=0.5 (const)") with a
+    # readable fallback for any condition lacking a hyperparam mapping.
+    condition_handles: list[Line2D] = []
+    for condition, linestyle in condition_styles.items():
+        label = _hyperparam_annotation(group, condition)
+        if not label:
+            label = "baseline" if condition == "default" else condition.replace("_", " ")
+        condition_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color="#444444",
+                lw=1.6,
+                linestyle=linestyle,
+                label=label,
+            )
         )
-    fig.subplots_adjust(right=0.78, hspace=0.28, top=0.93)
+
+    # Narrow single-metric figures stack the two legends vertically (algo on
+    # top, conditions below); wider multi-metric figures place them side by
+    # side. Layout is built bottom-up in figure coordinates: condition legend
+    # sits at the very bottom, then optionally the algo legend, then the
+    # shared "Episode" supxlabel, then the axes themselves.
+    stack_legends = n_metrics == 1
+    condition_cols = min(3, max(1, len(condition_handles)))
+    condition_rows = (
+        max(1, (len(condition_handles) + condition_cols - 1) // condition_cols)
+        if condition_handles
+        else 0
+    )
+    row_height = 0.05
+    gap = 0.015
+
+    y_bottom_anchor = 0.02
+    cond_top = y_bottom_anchor + row_height * condition_rows
+    if stack_legends and algo_handles and condition_handles:
+        algo_bottom = cond_top + gap
+        algo_top = algo_bottom + row_height
+        legend_top = algo_top
+    elif algo_handles and condition_handles:
+        # Side by side: both align at y_bottom_anchor; the tallest determines
+        # the overall legend block height.
+        legend_top = y_bottom_anchor + row_height * max(1, condition_rows)
+        algo_bottom = y_bottom_anchor
+    elif algo_handles:
+        legend_top = y_bottom_anchor + row_height
+        algo_bottom = y_bottom_anchor
+    else:
+        legend_top = y_bottom_anchor
+        algo_bottom = y_bottom_anchor
+
+    bottom_margin = legend_top + 0.08
+
+    if algo_handles and condition_handles:
+        if stack_legends:
+            algo_anchor = (0.5, algo_bottom)
+            algo_loc = "lower center"
+            cond_anchor = (0.5, y_bottom_anchor)
+            cond_loc = "lower center"
+        else:
+            algo_anchor = (0.48, y_bottom_anchor)
+            algo_loc = "lower right"
+            cond_anchor = (0.52, y_bottom_anchor)
+            cond_loc = "lower left"
+        # add_artist preserves the first legend when adding the second.
+        algo_legend = fig.legend(
+            handles=algo_handles,
+            loc=algo_loc,
+            bbox_to_anchor=algo_anchor,
+            ncol=len(algo_handles),
+            frameon=False,
+            fontsize=9,
+        )
+        fig.add_artist(algo_legend)
+        fig.legend(
+            handles=condition_handles,
+            loc=cond_loc,
+            bbox_to_anchor=cond_anchor,
+            ncol=condition_cols,
+            frameon=False,
+            fontsize=9,
+        )
+    elif algo_handles:
+        fig.legend(
+            handles=algo_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, y_bottom_anchor),
+            ncol=len(algo_handles),
+            frameon=False,
+            fontsize=9,
+        )
+
+    wspace = 0.28 if n_metrics == 1 else 0.40
+    fig.subplots_adjust(
+        left=0.08, right=right_margin, top=0.84, bottom=bottom_margin, wspace=wspace
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
+
+
+def _save_combined_with_policy_diff(
+    curves: list[dict[str, Any]],
+    *,
+    group: str,
+    title: str,
+    out_dir: Path,
+    filename: str,
+    show_std: bool,
+) -> None:
+    """Save both the 3-metric combined figure and the policy_diff-only variant.
+
+    The standalone variant is written under the ``combined_policy_diff_curves``
+    sibling directory with the same filename minus the ``_combined_learning_curves``
+    suffix.
+    """
+    combined_path = _plot_dir(out_dir, group, "combined_learning_curves") / filename
+    _save_combined_curve_figure(
+        curves,
+        group=group,
+        title=title,
+        path=combined_path,
+        show_std=show_std,
+    )
+
+    policy_diff_filename = filename.replace(
+        "_combined_learning_curves.png", "_policy_diff.png"
+    )
+    if policy_diff_filename == filename:
+        policy_diff_filename = filename.replace(".png", "_policy_diff.png")
+    policy_diff_path = (
+        _plot_dir(out_dir, group, "combined_policy_diff_curves") / policy_diff_filename
+    )
+    _save_combined_curve_figure(
+        curves,
+        group=group,
+        title=title,
+        path=policy_diff_path,
+        show_std=show_std,
+        metrics_filter=["policy_diff"],
+    )
 
 
 def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
@@ -241,11 +532,18 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
         if not available_metrics:
             continue
 
-        n_rows = len(available_metrics)
-        fig, axes = plt.subplots(n_rows, 1, figsize=(9, 3 * n_rows), constrained_layout=True)
-        if n_rows == 1:
+        n_cols = len(available_metrics)
+        if n_cols == 1:
+            figsize = (5.8, 3.8)
+        else:
+            figsize = (4.5 * n_cols, 3.6)
+        fig, axes = plt.subplots(1, n_cols, figsize=figsize, constrained_layout=False)
+        if n_cols == 1:
             axes = [axes]
+        else:
+            axes = list(axes)
 
+        algos_in_figure: list[str] = []
         for ax, metric in zip(axes, available_metrics):
             for algo in algos:
                 histories = seed_histories[(group, condition, grid, algo)]
@@ -264,16 +562,38 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
                 sigma = smoothed.std(axis=0) if len(smoothed) > 1 else np.zeros_like(mu)
                 episodes = np.arange(1, min_len + 1)
                 color = ALGO_COLORS[algo]
-                label = ALGO_LABELS[algo]
-                ax.plot(episodes, mu, color=color, label=label, linewidth=1.4)
+                ax.plot(episodes, mu, color=color, linewidth=1.4)
                 ax.fill_between(episodes, mu - sigma, mu + sigma, color=color, alpha=0.2)
+                if algo not in algos_in_figure:
+                    algos_in_figure.append(algo)
 
-            ax.set_xlabel("Episode")
-            ax.set_ylabel(metric)
-            ax.legend(fontsize=8)
+            ax.set_title(METRIC_TITLES.get(metric, metric), fontsize=10)
             ax.grid(alpha=0.25)
 
-        fig.suptitle(f"{group}: {condition} ({grid})", fontsize=10)
+        fig.suptitle(
+            _pretty_scene_title(group, grid, condition=condition),
+            fontsize=11,
+        )
+
+        algos_present = [a for a in sorted(LEARNING_ALGORITHMS) if a in algos_in_figure]
+        handles = [
+            Line2D([0], [0], color=ALGO_COLORS[a], lw=1.8, label=ALGO_LABELS[a])
+            for a in algos_present
+        ]
+        if handles:
+            annotation = _hyperparam_annotation(group, condition)
+            fig.legend(
+                handles=handles,
+                loc="lower center",
+                bbox_to_anchor=(0.5, 0.02),
+                ncol=len(handles),
+                frameon=False,
+                fontsize=9,
+                title=annotation or None,
+                title_fontsize=9,
+            )
+
+        fig.subplots_adjust(left=0.08, right=0.96, top=0.84, bottom=0.30, wspace=0.28)
         try:
             path = (
                 _plot_dir(out_dir, group, "learning_curves")
@@ -347,14 +667,17 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
                     ]
                     if len(curves) < 2:
                         continue
-                    path = (
-                        _plot_dir(out_dir, group, "combined_learning_curves")
-                        / f"default_{grid}_seed-{seed}_algorithms_combined_learning_curves.png"
-                    )
-                    _save_combined_curve_figure(
+                    _save_combined_with_policy_diff(
                         curves,
-                        title=f"default: algorithm comparison ({grid}, seed={seed})",
-                        path=path,
+                        group=group,
+                        title=_pretty_scene_title(
+                            group,
+                            grid,
+                            descriptor="algorithm comparison",
+                            seed=seed,
+                        ),
+                        out_dir=out_dir,
+                        filename=f"default_{grid}_seed-{seed}_algorithms_combined_learning_curves.png",
                         show_std=False,
                     )
                 summary_curves = []
@@ -374,14 +697,17 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
                             )
                         )
                 if len(summary_curves) >= 2:
-                    path = (
-                        _plot_dir(out_dir, group, "combined_learning_curves")
-                        / f"default_{grid}_all-seeds_algorithms_combined_learning_curves.png"
-                    )
-                    _save_combined_curve_figure(
+                    _save_combined_with_policy_diff(
                         summary_curves,
-                        title=f"default: algorithm comparison ({grid}, all seeds)",
-                        path=path,
+                        group=group,
+                        title=_pretty_scene_title(
+                            group,
+                            grid,
+                            descriptor="algorithm comparison",
+                            all_seeds=True,
+                        ),
+                        out_dir=out_dir,
+                        filename=f"default_{grid}_all-seeds_algorithms_combined_learning_curves.png",
                         show_std=True,
                     )
             continue
@@ -407,14 +733,16 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
                         )
                 if len(curves) < 2:
                     continue
-                path = (
-                    _plot_dir(out_dir, group, "combined_learning_curves")
-                    / f"{group}_seed-{seed}_combined_learning_curves.png"
-                )
-                _save_combined_curve_figure(
+                _save_combined_with_policy_diff(
                     curves,
-                    title=f"{group}: algorithm and grid comparison (seed={seed})",
-                    path=path,
+                    group=group,
+                    title=_pretty_scene_title(
+                        group,
+                        descriptor="algorithm and grid comparison",
+                        seed=seed,
+                    ),
+                    out_dir=out_dir,
+                    filename=f"{group}_seed-{seed}_combined_learning_curves.png",
                     show_std=False,
                 )
 
@@ -436,14 +764,16 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
                     if candidate["label"] not in {curve["label"] for curve in summary_curves}:
                         summary_curves.append(candidate)
             if len(summary_curves) >= 2:
-                path = (
-                    _plot_dir(out_dir, group, "combined_learning_curves")
-                    / f"{group}_all-seeds_combined_learning_curves.png"
-                )
-                _save_combined_curve_figure(
+                _save_combined_with_policy_diff(
                     summary_curves,
-                    title=f"{group}: algorithm and grid comparison (all seeds)",
-                    path=path,
+                    group=group,
+                    title=_pretty_scene_title(
+                        group,
+                        descriptor="algorithm and grid comparison",
+                        all_seeds=True,
+                    ),
+                    out_dir=out_dir,
+                    filename=f"{group}_all-seeds_combined_learning_curves.png",
                     show_std=True,
                 )
             continue
@@ -488,14 +818,17 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
                 if len(curves) < 2:
                     continue
 
-                path = (
-                    _plot_dir(out_dir, group, "combined_learning_curves")
-                    / f"{group}_{grid}_seed-{seed}_combined_learning_curves.png"
-                )
-                _save_combined_curve_figure(
+                _save_combined_with_policy_diff(
                     curves,
-                    title=f"{group}: algorithm and condition comparison ({grid}, seed={seed})",
-                    path=path,
+                    group=group,
+                    title=_pretty_scene_title(
+                        group,
+                        grid,
+                        descriptor="algorithm and condition comparison",
+                        seed=seed,
+                    ),
+                    out_dir=out_dir,
+                    filename=f"{group}_{grid}_seed-{seed}_combined_learning_curves.png",
                     show_std=False,
                 )
 
@@ -540,14 +873,17 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
 
             if len(summary_curves) < 2:
                 continue
-            path = (
-                _plot_dir(out_dir, group, "combined_learning_curves")
-                / f"{group}_{grid}_all-seeds_combined_learning_curves.png"
-            )
-            _save_combined_curve_figure(
+            _save_combined_with_policy_diff(
                 summary_curves,
-                title=f"{group}: algorithm and condition comparison ({grid}, all seeds)",
-                path=path,
+                group=group,
+                title=_pretty_scene_title(
+                    group,
+                    grid,
+                    descriptor="algorithm and condition comparison",
+                    all_seeds=True,
+                ),
+                out_dir=out_dir,
+                filename=f"{group}_{grid}_all-seeds_combined_learning_curves.png",
                 show_std=True,
             )
 
