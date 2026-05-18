@@ -25,6 +25,13 @@ def train(
     ignored — VI is the reference itself.
     """
     del optimal_policy, optimal_values
+
+    # ------------------------------------------------------------------
+    # Build model-based agent
+    # ------------------------------------------------------------------
+    # Value Iteration receives the full grid and reward function up front.
+    # Unlike Q-learning/MC, it does not sample episodes to learn; it enumerates
+    # all valid states and uses the known transition model internally.
     agent = ValueIterationAgent(
         grid=env.grid,
         reward_fn=reward_fn,
@@ -33,5 +40,11 @@ def train(
         theta=cfg.theta if cfg.theta is not None else 1e-6,
         max_iterations=cfg.vi_max_iter if cfg.vi_max_iter is not None else 1000,
     )
+
+    # ------------------------------------------------------------------
+    # Dynamic-programming solve
+    # ------------------------------------------------------------------
+    # ``agent.train()`` performs Bellman optimality sweeps until the maximum
+    # value change falls below theta or the iteration cap is reached.
     agent.train()
     return agent, agent.history

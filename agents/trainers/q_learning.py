@@ -51,12 +51,20 @@ def train(
         raise ValueError("TrainConfig.ql_episodes is required for Q-learning")
     validate_log_interval(cfg)
 
+    # ------------------------------------------------------------------
+    # Resolve run configuration
+    # ------------------------------------------------------------------
+    # The trainer owns environment-level choices such as start-state
+    # sampling and episode length. The agent only receives the learning
+    # hyperparameters it needs for action selection and Q-value updates.
     pick_episode_start = build_episode_start_picker(env, cfg)
 
     max_episode_length = (
         cfg.max_episode_length if cfg.max_episode_length is not None else _DEFAULT_MAX_EPISODE_LENGTH
     )
 
+    # Learning-rate schedules are shared with MC. The schedule object
+    # hides whether alpha is global per episode or state-action specific.
     lr_schedule = build_lr_schedule(
         cfg.lr_schedule,
         alpha=cfg.alpha if cfg.alpha is not None else 0.5,
@@ -65,6 +73,11 @@ def train(
         visit_count_c=cfg.visit_count_c,
     )
 
+    # ------------------------------------------------------------------
+    # Build agent
+    # ------------------------------------------------------------------
+    # Q-learning updates after every transition, so the agent needs the
+    # learning-rate schedule immediately during the interaction loop.
     agent = QLearningAgent(
         gamma=cfg.gamma,
         epsilon=cfg.epsilon if cfg.epsilon is not None else 1.0,
@@ -78,6 +91,11 @@ def train(
         lr_schedule=lr_schedule,
     )
 
+    # ------------------------------------------------------------------
+    # Metrics collected during training
+    # ------------------------------------------------------------------
+    # These lists stay aligned by episode index and are converted into a
+    # TrainingHistory at the end for plotting, CSV summaries, and W&B.
     episode_discounted_rewards: list[float] = []
     episode_undiscounted_rewards: list[float] = []
     episode_deltas: list[float] = []
@@ -90,27 +108,51 @@ def train(
 
     schedule_has_global_rate = lr_schedule.get_global_rate() is not None
 
+    # ------------------------------------------------------------------
+    # Logging and stopping state
+    # ------------------------------------------------------------------
+    # ``build_episode_iter`` returns either a plain range or a tqdm range,
+    # depending on whether a live logger is active.
     logger, log_interval = build_logger(cfg, cfg.ql_episodes)
     episode_iter = build_episode_iter(cfg.ql_episodes, logger, "Q-learning")
 
+    # Early stopping watches the tied-greedy policy derived from the Q-table.
+    # Using action sets instead of a single argmax avoids treating numerical
+    # ties as policy changes.
     prev_greedy_policy: dict[Position, frozenset[int]] | None = None
     stable_streak = 0
     stopped_early = False
     stop_episode = cfg.ql_episodes
     last_logged_episode = 0
 
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
     for episode_idx in episode_iter:
+        # Reset the environment for a new episode. With exploring starts
+        # enabled this may be a sampled empty cell; otherwise it is the
+        # fixed evaluation start.
         state = env.reset(agent_start_pos=pick_episode_start())
         episode_start = state
         env.reward_fn = reward_fn
         agent.start_episode()
+
+        # Episode-level accumulators are kept outside the agent so all
+        # trainers report metrics in the same format.
         ep_discounted_reward = 0.0
         ep_undiscounted_reward = 0.0
         ep_delta = 0.0
         gamma_power = 1.0
+
+        # Q-learning is one-step bootstrapping: after every environment
+        # transition, update Q(s, a) using the observed reward and the
+        # current estimate of the next state's best action value.
         for _ in range(max_episode_length):
             action = agent.take_action(state)
             next_state, reward, terminated, _info = env.step(action)
+
+            # Capture the value before/after the update so ``delta_q``
+            # measures the largest Q-table movement in this episode.
             previous_state = agent._last_state
             old_q_value = (
                 float(agent.q_table[previous_state][action])
@@ -127,7 +169,13 @@ def train(
             gamma_power *= cfg.gamma
             if terminated:
                 break
+
+        # End-of-episode bookkeeping decays epsilon/alpha schedules inside
+        # the agent after all one-step updates for this episode are done.
         agent.end_episode()
+
+        # Store raw per-episode metrics first. Windowed means are computed
+        # only when logging, so the saved history keeps the full resolution.
         episode_discounted_rewards.append(ep_discounted_reward)
         episode_undiscounted_rewards.append(ep_undiscounted_reward)
         episode_deltas.append(ep_delta)
@@ -149,6 +197,8 @@ def train(
             v_star = optimal_values.get(episode_start, float("nan"))
             episode_optimality_gaps.append(v_star - ep_discounted_reward)
 
+        # Policy stability is checked after every episode, using the current
+        # Q-table rather than the final greedy policy object.
         current_greedy = _greedy_policy_from_q_table(agent.q_table)
         if prev_greedy_policy is not None and current_greedy == prev_greedy_policy:
             stable_streak += 1
@@ -158,6 +208,8 @@ def train(
 
         episode_num = episode_idx + 1
         if logger is not None and should_log(episode_num, log_interval, cfg.ql_episodes):
+            # Build live value/policy snapshots for console or W&B logging.
+            # This avoids switching the agent into evaluation mode mid-run.
             live_values = {s: float(np.max(q)) for s, q in agent.q_table.items()}
             live_policy = {s: int(np.argmax(q)) for s, q in agent.q_table.items()}
             mean_discounted = mean_tail(episode_discounted_rewards, log_interval)
@@ -232,9 +284,17 @@ def train(
 
     if not stopped_early:
         stop_episode = len(episode_discounted_rewards)
+
+    # Restore the original evaluation start after possible exploring starts,
+    # and make future calls to ``take_action`` greedy rather than epsilon-greedy.
     restore_eval_start(env, cfg)
     agent.set_eval_mode()
 
+    # ------------------------------------------------------------------
+    # Build training history
+    # ------------------------------------------------------------------
+    # Optional traces are only included when their corresponding comparison
+    # or schedule produced data.
     metrics: dict[str, list[float]] = {
         "discounted_return": episode_discounted_rewards,
         "undiscounted_return": episode_undiscounted_rewards,

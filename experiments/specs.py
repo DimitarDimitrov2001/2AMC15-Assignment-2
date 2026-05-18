@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Algorithms and grids
+# ---------------------------------------------------------------------------
+
+
 ALGORITHMS = ("value_iteration", "mc", "q_learning")
 
 DEFAULT_GRIDS = (
@@ -14,31 +19,52 @@ DEFAULT_GRIDS = (
     Path("grid_configs/super_hard.npy"),
 )
 
+# ---------------------------------------------------------------------------
+# Baseline hyperparameters
+#
+# These are the default values used by ``run_experiments.py`` unless a
+# case overrides one or more fields. The keys mirror the fields consumed by
+# ``experiments.runner._train_config`` and then ``agents.trainers.TrainConfig``.
+# ---------------------------------------------------------------------------
+
+
 DEFAULTS: dict[str, Any] = {
+    # Environment/evaluation settings.
     "sigma": 0,
     "gamma": 0.99,
     "eval_episodes": 50,
     "eval_max_steps": 1000,
     "random_seed": 0,
-    "reward_function": "basic",
     "exploring_starts": True,
+
+    # Learning-rate / alpha settings for Q-learning and MC.
     "alpha": 0.2,
     "alpha_min": 0.01,
     "alpha_decay": 0.9995,
     "lr_schedule": "visit_count",
     "visit_count_c": 50,
+
+    # Exploration / epsilon settings for Q-learning and MC.
     "epsilon": 0.7,
     "epsilon_min": 0.05,
     "epsilon_decay": 0.99995,
     "fixed_epsilon": False,
+
+    # Training budgets.
     "ql_episodes": 100000,
     "mc_episodes": 100000,
     "max_episode_length": 1500,
+
+    # Value Iteration solver settings.
     "theta": 1e-6,
     "vi_max_iter": 1000,
+
+    # Model-free early stopping setting.
     "policy_stable_patience": 1000,
 }
 
+# Shortened budgets for tests. These preserve the same experiment cases
+# and algorithm coverage but make ``run_experiments.py --quick`` finish fast.
 QUICK_OVERRIDES: dict[str, Any] = {
     "eval_episodes": 2,
     "eval_max_steps": 100,
@@ -47,6 +73,15 @@ QUICK_OVERRIDES: dict[str, Any] = {
     "max_episode_length": 100,
     "vi_max_iter": 200,
 }
+
+# ---------------------------------------------------------------------------
+# Output schema
+#
+# ``CSV_FIELDS`` defines the exact columns written by the runner. Keeping this
+# centralized makes the master CSV and per-group CSVs share one stable schema.
+# ``METRIC_FIELDS`` is the subset summarized by the overview aggregation.
+# ---------------------------------------------------------------------------
+
 
 CSV_FIELDS = [
     "setup_group",
@@ -87,6 +122,11 @@ METRIC_FIELDS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Experiment case model
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class ExperimentCase:
     """One report condition to run for all selected algorithms."""
@@ -99,6 +139,8 @@ class ExperimentCase:
 
 def defaults(*, quick: bool = False) -> dict[str, Any]:
     """Return the default run configuration, optionally shortened for smoke tests."""
+    # Return a copy so individual runs/cases can merge overrides without
+    # mutating the module-level DEFAULTS dictionary.
     cfg = dict(DEFAULTS)
     if quick:
         cfg.update(QUICK_OVERRIDES)
@@ -107,6 +149,8 @@ def defaults(*, quick: bool = False) -> dict[str, Any]:
 
 def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[ExperimentCase]:
     """Build the assignment setup groups."""
+
+    # Default value case
     primary_grid = grids[0]
     cases: list[ExperimentCase] = [
         ExperimentCase(
@@ -117,6 +161,7 @@ def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[Ex
         )
     ]
 
+    # Grid comparison cases
     for grid in grids:
         cases.append(
             ExperimentCase(
@@ -127,12 +172,22 @@ def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[Ex
             )
         )
 
+    # ------------------------------------------------------------------
+    # Hyperparameter cases
+    # ------------------------------------------------------------------
+    # Each case overrides a small number of baseline defaults while keeping
+    # the rest fixed, which makes the report tables/plots easy to compare.
     cases.extend(
         [
+            # Discount-factor sensitivity.
             ExperimentCase("discount_factor", "gamma=0.6", primary_grid, {"gamma": 0.6}),
             ExperimentCase("discount_factor", "gamma=0.9", primary_grid, {"gamma": 0.9}),
+
+            # Environment stochasticity sensitivity.
             ExperimentCase("stochasticity", "sigma=0.02", primary_grid, {"sigma": 0.02}),
             ExperimentCase("stochasticity", "sigma=0.5", primary_grid, {"sigma": 0.5}),
+
+            # Exploration schedule sensitivity.
             ExperimentCase(
                 "exploration_epsilon",
                 "low_fixed_epsilon",
@@ -156,6 +211,8 @@ def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[Ex
                     "fixed_epsilon": False,
                 },
             ),
+
+            # Learning-rate schedule sensitivity.
             ExperimentCase(
                 "learning_rate",
                 "low_fixed_alpha",
@@ -189,6 +246,8 @@ def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[Ex
                     "visit_count_c": 10.0,
                 },
             ),
+
+            # Episode-length sensitivity for sampled-episode methods.
             ExperimentCase(
                 "mc_episode_length",
                 "max_episode_length=500",
@@ -208,6 +267,8 @@ def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[Ex
 
 def group_names(cases: list[ExperimentCase]) -> list[str]:
     """Return setup-group names in first-seen order."""
+    # Preserve construction order for readable progress output, per-group CSV
+    # creation, and overview tables.
     seen: set[str] = set()
     names: list[str] = []
     for case in cases:

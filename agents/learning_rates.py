@@ -1,7 +1,7 @@
 """Learning rate schedules for tabular RL agents.
 
-Defines an interface for learning-rate schedules used by Q-learning,
-Monte Carlo, and off-policy MC agents, plus two concrete schedules:
+Defines an interface for learning-rate schedules used by Q-learning and
+Monte Carlo agents, plus two concrete schedules:
 
 - ``ExponentialDecaySchedule`` -- per-episode exponential decay with a floor
   (the long-standing default behaviour). Setting ``decay=1.0`` yields a

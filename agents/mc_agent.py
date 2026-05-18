@@ -53,6 +53,8 @@ class MCEpisodeResult:
 class MCAgent(BaseAgent):
     """On-policy first-visit Monte Carlo control with epsilon-greedy behaviour."""
 
+    # Public training hyperparameters and learned artifacts. The trainer
+    # reads ``values`` and ``policy`` after calling ``set_eval_mode()``.
     n_actions: int
     gamma: float
     epsilon: float
@@ -69,6 +71,8 @@ class MCAgent(BaseAgent):
     last_episode_alpha_min: float | None
     last_episode_alpha_max: float | None
 
+    # Private episode state. MC stores the whole episode because it cannot
+    # update Q-values until the return from each first visit is known.
     _episode: list[tuple[tuple[int, int], int, float]]
     _rng: random.Random
     _training: bool
@@ -81,7 +85,7 @@ class MCAgent(BaseAgent):
         epsilon: float = 0.2,
         epsilon_decay: float = 1.0,
         epsilon_min: float = 0.01,
-        # --- alpha (legacy; ignored when lr_schedule is supplied) ---
+        # --- alpha (ignored when lr_schedule is supplied) ---
         alpha: float = 0.1,
         alpha_decay: float = 1.0,
         alpha_min: float = 0.01,
@@ -95,6 +99,11 @@ class MCAgent(BaseAgent):
         if q_init_noise < 0.0:
             raise ValueError("q_init_noise must be >= 0")
 
+        # ------------------------------------------------------------------
+        # Store scalar hyperparameters
+        # ------------------------------------------------------------------
+        # ``gamma`` discounts future rewards in the backward return pass.
+        # ``epsilon`` controls the on-policy behaviour used to collect data.
         self.n_actions = n_actions
         self.gamma = gamma
 
@@ -105,6 +114,9 @@ class MCAgent(BaseAgent):
         self.q_init = q_init
         self.q_init_noise = q_init_noise
 
+        # ------------------------------------------------------------------
+        # Randomness and learning-rate schedule
+        # ------------------------------------------------------------------
         # Local RNG instance so each agent has its own independent stream and
         # does not mutate the global random/np.random state. The environment
         # and other agents are unaffected by construction order.
@@ -120,12 +132,21 @@ class MCAgent(BaseAgent):
             )
         self.lr_schedule = lr_schedule
 
+        # ``alpha`` is kept as a scalar compatibility/debug field. For
+        # visit-count schedules there is no single global alpha, so NaN marks
+        # that the real rates are state-action specific.
         global_rate = self.lr_schedule.get_global_rate()
         self.alpha = global_rate if global_rate is not None else float("nan")
         self.last_episode_mean_alpha = None
         self.last_episode_alpha_min = None
         self.last_episode_alpha_max = None
 
+        # ------------------------------------------------------------------
+        # Learned state
+        # ------------------------------------------------------------------
+        # ``defaultdict`` creates Q-value rows lazily when a state is first
+        # encountered. ``values`` and ``policy`` are derived snapshots used
+        # by evaluation/plotting after training.
         self.q_table = defaultdict(self._initial_q_values)
         self._episode = []
         self._training = True
@@ -135,6 +156,9 @@ class MCAgent(BaseAgent):
 
     def _initial_q_values(self) -> np.ndarray:
         """Factory for new Q-table rows, used by the ``defaultdict``."""
+        # A tiny seeded perturbation avoids always choosing action 0 when all
+        # actions are initially tied. Setting ``q_init_noise=0`` restores exact
+        # identical initialization.
         if self.q_init_noise == 0.0:
             return np.full(self.n_actions, self.q_init, dtype=float)
         return np.array(
@@ -147,11 +171,16 @@ class MCAgent(BaseAgent):
 
     def take_action(self, state: tuple[int, int]) -> int:
         """Epsilon-greedy action selection with random tie-breaking on greedy ties."""
+        # Evaluation mode ignores epsilon and follows the frozen greedy
+        # policy built from the final Q-table. If a state was never visited,
+        # fall back to the current Q-table row for that state.
         if not self._training:
             if state in self.policy:
                 return self.policy[state]
             return int(np.argmax(self.q_table[state]))
 
+        # Training mode is on-policy epsilon-greedy: the same policy that
+        # generates episodes is the policy being improved.
         if self._rng.random() < self.epsilon:
             return self._rng.randint(0, self.n_actions - 1)
         q_values = self.q_table[state]
@@ -179,6 +208,9 @@ class MCAgent(BaseAgent):
 
     def end_episode(self) -> MCEpisodeResult:
         """Apply first-visit MC updates from the current episode trajectory."""
+        # Empty episodes are unusual but possible if a caller starts/ends an
+        # episode without stepping. Still advance episode-level schedules so
+        # logs stay consistent with the episode count.
         if not self._episode:
             self.lr_schedule.update_episode()
             return MCEpisodeResult(
@@ -190,6 +222,11 @@ class MCAgent(BaseAgent):
                 alpha_max=None,
             )
 
+        # ------------------------------------------------------------------
+        # Compute returns
+        # ------------------------------------------------------------------
+        # Walk backward so G_t = R_{t+1} + gamma * G_{t+1}. We reverse the
+        # list afterwards so first-visit filtering can scan in episode order.
         returns: list[tuple[tuple[int, int], int, float]] = []
         g_return = 0.0
         for state, action, reward in reversed(self._episode):
@@ -200,6 +237,12 @@ class MCAgent(BaseAgent):
         visited: set[tuple[tuple[int, int], int]] = set()
         max_delta = 0.0
         episode_alphas: list[float] = []
+
+        # ------------------------------------------------------------------
+        # First-visit Q updates
+        # ------------------------------------------------------------------
+        # Each state-action pair is updated only at its first occurrence in
+        # the episode, using the full return from that point onward.
         for state, action, g_t in returns:
             if (state, action) in visited:
                 continue
@@ -210,9 +253,16 @@ class MCAgent(BaseAgent):
             self.q_table[state][action] += applied_alpha * (g_t - old_q)
             max_delta = max(max_delta, abs(self.q_table[state][action] - old_q))
 
+        # ------------------------------------------------------------------
+        # End-of-episode schedules and diagnostics
+        # ------------------------------------------------------------------
+        # Epsilon decays once per episode, after all updates that used the
+        # behaviour policy for this episode.
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         self.lr_schedule.update_episode()
 
+        # Trainer plots use a single alpha trace. For state-action schedules,
+        # report the episode mean plus min/max spread.
         if episode_alphas:
             self.last_episode_mean_alpha = float(sum(episode_alphas) / len(episode_alphas))
             self.last_episode_alpha_min = float(min(episode_alphas))
@@ -230,6 +280,7 @@ class MCAgent(BaseAgent):
 
         total_reward = float(sum(r for _, _, r in self._episode))
         self._episode.clear()
+
         return MCEpisodeResult(
             delta_q=float(max_delta),
             total_reward=total_reward,
@@ -241,11 +292,15 @@ class MCAgent(BaseAgent):
 
     def build_value_and_policy(self) -> None:
         """Populate ``self.values`` and ``self.policy`` from the trained Q-table."""
+        # Convert action-values into the state-value and greedy-policy shape
+        # expected by the plotting and evaluation helpers.
         self.values = {state: float(np.max(q_vals)) for state, q_vals in self.q_table.items()}
         self.policy = {state: int(np.argmax(q_vals)) for state, q_vals in self.q_table.items()}
 
     def set_eval_mode(self) -> None:
         """Switch to the learned greedy policy for fixed-policy evaluation."""
+        # Freeze a greedy snapshot and disable exploration so evaluation is
+        # deterministic except for environment stochasticity.
         self.build_value_and_policy()
         self.epsilon = 0.0
         self._training = False

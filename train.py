@@ -1,7 +1,7 @@
 """Unified training CLI.
 
 Usage:
-    python train.py {value_iteration|q_learning|mc|off_policy_mc|random} GRID [GRID ...] [--flags]
+    python train.py {value_iteration|q_learning|mc|random} GRID [GRID ...] [--flags]
 
 The first positional argument selects the agent. Each agent has its own
 subparser exposing only the flags it needs. Shared flags (sigma, gamma,
@@ -10,7 +10,7 @@ eval_max_steps, ...) live on a parent parser used by all subcommands.
 
 from __future__ import annotations
 
-from argparse import ArgumentParser, ArgumentTypeError, Namespace
+from argparse import ArgumentParser, Namespace
 from datetime import datetime
 from pathlib import Path
 
@@ -26,14 +26,16 @@ from agents.trainers import (
 from utils.evaluation import evaluate_policy_metrics
 
 
-def _optional_float(raw: str) -> float | None:
-    """Parse a float CLI value, accepting 'none' to disable the setting."""
-    if raw.lower() in {"none", "null"}:
-        return None
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ArgumentTypeError(f"expected a float or None, got {raw!r}") from exc
+# ---------------------------------------------------------------------------
+# Shared CLI arguments
+#
+# This parent parser holds arguments that every subcommand understands. The
+# groups below are organized by what the hyperparameters control:
+#   - environment/evaluation dynamics,
+#   - output and experiment comparison,
+#   - optional external logging.
+# Agent-specific learning hyperparameters are added later on each subparser.
+# ---------------------------------------------------------------------------
 
 
 def _build_shared_parser() -> ArgumentParser:
@@ -44,8 +46,14 @@ def _build_shared_parser() -> ArgumentParser:
     W&B). Each subparser inherits the entire parent through ``parents=``.
     """
     parent = ArgumentParser(add_help=False)
+
+    # Required input: one or more grid files. Every selected agent is run once
+    # per grid path in ``main``.
     parent.add_argument("GRID", type=Path, nargs="+", help="Paths to one or more grid files.")
 
+    # Environment and evaluation hyperparameters:
+    # control stochasticity, discounting, rendering, random seed, start state,
+    # and how long/how often post-training evaluation rollouts run.
     env = parent.add_argument_group("environment")
     env.add_argument("--no_gui", action="store_true", help="Disable rendering for faster training.")
     env.add_argument("--fps", type=int, default=30, help="GUI frame rate (ignored with --no_gui).")
@@ -65,6 +73,8 @@ def _build_shared_parser() -> ArgumentParser:
     env.add_argument("--random_seed", type=int, default=0, help="Random seed for the environment.")
     env.add_argument("--start_pos", type=str, default=None, help="Agent start position as col,row.")
 
+    # Output hyperparameters:
+    # control where generated metrics, plots, and rollout visualisations go.
     output = parent.add_argument_group("output")
     output.add_argument(
         "--out_dir",
@@ -75,29 +85,24 @@ def _build_shared_parser() -> ArgumentParser:
             "results/<agent>_<timestamp>/ when omitted."
         ),
     )
-    output.add_argument(
-        "--reward",
-        type=str,
-        choices=("manhattan", "basic"),
-        default="manhattan",
-        help=(
-            "Reward function to use. 'manhattan' is distance-shaped; 'basic' "
-            "uses the assignment spec (-1/+10). See README §Reward Function."
-        ),
-    )
 
+    # Comparison/evaluation hyperparameters:
+    # optionally train a VI reference before Q-learning/MC so model-free
+    # policies can be compared against approximately optimal actions.
     compare = parent.add_argument_group("evaluation comparison")
     compare.add_argument(
         "--compare_optimal",
         action="store_true",
         help=(
             "Pre-train a Value Iteration agent and use its policy as the optimality "
-            "reference: records per-episode policy disagreement (QL/MC/off-policy MC), "
+            "reference: records per-episode policy disagreement (QL/MC), "
             "emits a spatial *_policy_diff.png heatmap, and adds the scalar to the eval "
             "summary."
         ),
     )
 
+    # External logging hyperparameters:
+    # control whether training metrics are mirrored to Weights & Biases.
     wandb_group = parent.add_argument_group("Weights & Biases logging")
     wandb_group.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
     wandb_group.add_argument(
@@ -107,12 +112,21 @@ def _build_shared_parser() -> ArgumentParser:
 
 
 # ---------------------------------------------------------------------------
-# Per-concern flag helpers used to compose the QL / MC / off-policy MC parsers.
+# Per-concern flag helpers used to compose the QL / MC parsers.
 #
-# Each helper attaches one logical group of CLI flags to a subparser via an
-# argparse argument group, so that ``--help`` output groups them together
+# Each helper attaches one logical group of CLI flags to a subparser, 
+# so that ``--help`` output groups them together
 # under a named heading. Adding a new tabular agent should mean composing
 # these helpers, never copy-pasting flag definitions.
+#
+# These helpers are deliberately split by hyperparameter type:
+#   - episode budget,
+#   - learning rate / alpha,
+#   - exploration / epsilon,
+#   - Q-table initialization,
+#   - training logs,
+#   - early stopping,
+#   - training start-state sampling.
 # ---------------------------------------------------------------------------
 
 
@@ -120,6 +134,9 @@ def _add_episodes_args(
     subparser: ArgumentParser, *, default_episodes: int, default_max_episode_length: int | None = None,
 ) -> None:
     """Attach the episode-budget flags (``--episodes`` plus optionally ``--max_episode_length``)."""
+    # Episode-budget hyperparameters:
+    # set how many training episodes to run and how many environment steps
+    # each training episode may consume before being truncated.
     group = subparser.add_argument_group("episode budget")
     group.add_argument("--episodes", type=int, default=default_episodes, help="Training episodes.")
     if default_max_episode_length is not None:
@@ -139,6 +156,9 @@ def _add_alpha_args(
     default_alpha_decay: float,
 ) -> None:
     """Attach the learning-rate schedule flags shared by tabular Q-table agents."""
+    # Learning-rate hyperparameters:
+    # select the alpha schedule and its parameters. These affect how strongly
+    # each Q-value update moves toward its target.
     group = subparser.add_argument_group("learning rate (alpha)")
     group.add_argument(
         "--alpha",
@@ -193,6 +213,8 @@ def _add_epsilon_args(
     default_epsilon_decay: float,
 ) -> None:
     """Attach the exploration-rate flags shared by tabular Q-table agents."""
+    # Exploration hyperparameters:
+    # control epsilon-greedy action selection while training.
     group = subparser.add_argument_group("exploration (epsilon)")
     group.add_argument("--epsilon", type=float, default=default_epsilon, help="Initial exploration rate.")
     group.add_argument(
@@ -209,6 +231,9 @@ def _add_epsilon_args(
 
 def _add_q_init_args(subparser: ArgumentParser) -> None:
     """Attach the Q-table initialisation flags shared by tabular Q-table agents."""
+    # Q-table initialization hyperparameters:
+    # define the starting value for unseen state-action rows and optional
+    # small noise used to avoid deterministic tie bias at initialization.
     group = subparser.add_argument_group("Q-table initialisation")
     group.add_argument(
         "--q_init", type=float, default=0.0, help="Base initial Q-value for new state-action rows.",
@@ -226,6 +251,9 @@ def _add_q_init_args(subparser: ArgumentParser) -> None:
 
 def _add_log_args(subparser: ArgumentParser) -> None:
     """Attach the training-log flags shared by tabular Q-table agents."""
+    # Training-log hyperparameters:
+    # control how often the trainer emits live diagnostics and whether the
+    # current Q-table is included in those logs.
     group = subparser.add_argument_group("training log")
     group.add_argument(
         "--log_interval",
@@ -242,6 +270,9 @@ def _add_log_args(subparser: ArgumentParser) -> None:
 
 def _add_stopping_args(subparser: ArgumentParser) -> None:
     """Attach the early-stopping flags shared by tabular Q-table agents."""
+    # Early-stopping hyperparameters:
+    # stop model-free training once the tied-greedy policy has not changed
+    # for enough consecutive episodes.
     group = subparser.add_argument_group("early stopping")
     group.add_argument(
         "--policy-stable-patience",
@@ -263,9 +294,12 @@ def _add_training_starts_arg(subparser: ArgumentParser) -> None:
     Sutton & Barto §5.4 exploring-starts: at the *start* of every training
     episode we sample a uniformly random empty cell while evaluation
     rollouts still start from the requested ``--start_pos``. Wired up
-    identically for QL, on-policy MC, and off-policy MC via
+    identically for QL and on-policy MC via
     :func:`agents.trainers.common.build_episode_start_picker`.
     """
+    # Training-start hyperparameters:
+    # choose whether every training episode starts from the fixed evaluation
+    # start or from a uniformly sampled empty cell.
     group = subparser.add_argument_group("training-time exploration")
     group.add_argument(
         "--exploring_starts",
@@ -292,10 +326,9 @@ def _add_tabular_agent_args(
 ) -> None:
     """Compose the standard tabular-Q-table flag set on *subparser*.
 
-    QL, MC, and off-policy MC all share the same skeleton: episode budget,
-    alpha schedule, epsilon schedule, Q-table init, training log. The only
-    things that vary per agent are the defaults and the agent-specific
-    flags layered on top (e.g. --off_policy_update for off-policy MC).
+    QL and MC share the same skeleton: episode budget, alpha schedule,
+    epsilon schedule, Q-table init, and training log. The only things that
+    vary per agent are the defaults.
     """
     _add_episodes_args(
         subparser,
@@ -321,10 +354,18 @@ def _add_tabular_agent_args(
 
 def parse_args() -> Namespace:
     """Build the subparser tree and parse the CLI."""
+    # ------------------------------------------------------------------
+    # Top-level parser and shared parent
+    # ------------------------------------------------------------------
     shared = _build_shared_parser()
     parser = ArgumentParser(description="Unified training entry point for RL agents.")
     subparsers = parser.add_subparsers(dest="agent", required=True, help="Agent to train.")
 
+    # ------------------------------------------------------------------
+    # Value Iteration subcommand
+    # ------------------------------------------------------------------
+    # VI has solver-specific hyperparameters instead of episode/epsilon/alpha
+    # settings because it performs dynamic programming over the known model.
     vi = subparsers.add_parser(
         "value_iteration", parents=[shared], help="Train a tabular value-iteration agent.",
     )
@@ -332,6 +373,11 @@ def parse_args() -> Namespace:
     vi_group.add_argument("--theta", type=float, default=1e-6, help="Bellman convergence threshold.")
     vi_group.add_argument("--vi_max_iter", type=int, default=1000, help="Maximum Bellman sweeps.")
 
+    # ------------------------------------------------------------------
+    # Q-learning subcommand
+    # ------------------------------------------------------------------
+    # Q-learning uses the full tabular-Q flag set and updates after every
+    # transition, so its default episode length is shorter than MC's.
     ql = subparsers.add_parser("q_learning", parents=[shared], help="Train a Q-learning agent.")
     _add_tabular_agent_args(
         ql,
@@ -346,6 +392,11 @@ def parse_args() -> Namespace:
     )
     _add_training_starts_arg(ql)
 
+    # ------------------------------------------------------------------
+    # On-policy Monte Carlo subcommand
+    # ------------------------------------------------------------------
+    # MC also uses the tabular-Q flag set, but updates only at episode end,
+    # so the default episode cap is larger.
     mc = subparsers.add_parser(
         "mc", parents=[shared], help="Train an on-policy first-visit MC agent.",
     )
@@ -362,56 +413,11 @@ def parse_args() -> Namespace:
     )
     _add_training_starts_arg(mc)
 
-    off_mc = subparsers.add_parser(
-        "off_policy_mc",
-        parents=[shared],
-        help="Train an off-policy weighted-importance-sampling MC control agent.",
-    )
-    _add_tabular_agent_args(
-        off_mc,
-        default_episodes=5000,
-        default_max_episode_length=2000,
-        default_alpha=0.2,
-        default_alpha_min=0.02,
-        default_alpha_decay=0.9998,
-        default_epsilon=0.3,
-        default_epsilon_min=0.02,
-        default_epsilon_decay=0.9998,
-    )
-    _add_training_starts_arg(off_mc)
-    off_policy_group = off_mc.add_argument_group("off-policy MC specific")
-    off_policy_group.add_argument(
-        "--off_policy_update",
-        choices=("weighted", "alpha"),
-        default="alpha",
-        help=(
-            "Use constant-alpha importance-weighted updates or textbook cumulative "
-            "weighted averaging. The --alpha* and --lr_schedule flags only affect "
-            "the 'alpha' update mode; weighted importance sampling has its own "
-            "intrinsic step size W / C(s, a)."
-        ),
-    )
-    off_policy_group.add_argument(
-        "--importance_weight_clip",
-        type=_optional_float,
-        default=10.0,
-        help=(
-            "Maximum importance weight used in alpha mode before multiplying by "
-            "alpha; use None to disable."
-        ),
-    )
-    off_policy_group.add_argument(
-        "--soft_target_epsilon",
-        type=float,
-        default=0.0,
-        help=(
-            "Target-policy exploration rate. 0.0 (default) uses the textbook "
-            "deterministic greedy target, which breaks the backward loop at "
-            "non-greedy actions. Values > 0 make the target epsilon-soft. Must "
-            "be strictly less than --epsilon."
-        ),
-    )
-
+    # ------------------------------------------------------------------
+    # Random baseline subcommand
+    # ------------------------------------------------------------------
+    # Random has no training hyperparameters. It shares only environment,
+    # output, evaluation, and logging flags from the parent parser.
     subparsers.add_parser("random", parents=[shared], help="Evaluate a uniform-random baseline.")
 
     return parser.parse_args()
@@ -435,37 +441,50 @@ def _config_from_args(args: Namespace) -> TrainConfig:
     works for every subcommand.
     """
     return TrainConfig(
+        # Environment/evaluation hyperparameters shared by every agent.
         sigma=args.sigma,
         gamma=args.gamma,
         eval_max_steps=args.eval_max_steps,
         random_seed=args.random_seed,
         eval_episodes=args.eval_episodes,
         start_pos=parse_start_pos(args.start_pos),
+
+        # Learning-rate / alpha hyperparameters for Q-learning and MC.
+        # Value Iteration and random ignore these fields.
         alpha=getattr(args, "alpha", None),
         alpha_min=getattr(args, "alpha_min", None),
         alpha_decay=getattr(args, "alpha_decay", None),
         lr_schedule=getattr(args, "lr_schedule", "exponential"),
         visit_count_c=getattr(args, "visit_count_c", 1.0),
+
+        # Exploration / epsilon hyperparameters for Q-learning and MC.
         epsilon=getattr(args, "epsilon", None),
         epsilon_min=getattr(args, "epsilon_min", None),
         epsilon_decay=getattr(args, "epsilon_decay", None),
         fixed_epsilon=getattr(args, "fixed_epsilon", False),
+
+        # Episode-budget hyperparameters. Only the selected model-free agent
+        # receives an episode count; the other count remains None.
         ql_episodes=getattr(args, "episodes", None) if args.agent == "q_learning" else None,
-        mc_episodes=getattr(args, "episodes", None) if args.agent in {"mc", "off_policy_mc"} else None,
+        mc_episodes=getattr(args, "episodes", None) if args.agent == "mc" else None,
         max_episode_length=getattr(args, "max_episode_length", None),
+
+        # Training diagnostics and Q-table initialization hyperparameters.
         log_interval=getattr(args, "log_interval", 100),
         log_q_table=getattr(args, "log_q_table", False),
         q_init=getattr(args, "q_init", 0.0),
         q_init_noise=getattr(args, "q_init_noise", 1e-6),
         exploring_starts=getattr(args, "exploring_starts", False),
-        off_policy_update=getattr(args, "off_policy_update", "alpha"),
-        importance_weight_clip=getattr(args, "importance_weight_clip", 10.0),
-        soft_target_epsilon=getattr(args, "soft_target_epsilon", 0.0),
+
+        # Value Iteration solver hyperparameters.
         theta=getattr(args, "theta", None),
         vi_max_iter=getattr(args, "vi_max_iter", None),
-        reward_function=getattr(args, "reward", "manhattan"),
+
+        # External logging hyperparameters.
         wandb=getattr(args, "wandb", False),
         wandb_project=getattr(args, "wandb_project", "rl-in-practice"),
+
+        # Early-stopping hyperparameter for model-free policy learning.
         policy_stable_patience=_resolve_policy_stable_patience(
             getattr(args, "policy_stable_patience", None)
         ),
@@ -474,6 +493,9 @@ def _config_from_args(args: Namespace) -> TrainConfig:
 
 def main() -> None:
     """CLI entry point: dispatch to the chosen trainer per grid."""
+    # ------------------------------------------------------------------
+    # Parse CLI and resolve output/config
+    # ------------------------------------------------------------------
     args = parse_args()
     if args.out_dir is None:
         run_timestamp = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
@@ -486,10 +508,15 @@ def main() -> None:
     use_reference = args.compare_optimal and args.agent in {
         "q_learning",
         "mc",
-        "off_policy_mc",
     }
 
     for grid_path in args.GRID:
+        # ------------------------------------------------------------------
+        # Environment and reward setup
+        # ------------------------------------------------------------------
+        # ``setup_grid_run`` loads the grid, resolves the actual start state,
+        # installs the reward function, and returns the initial position used
+        # by training and evaluation.
         env, initial_pos, reward_fn = setup_grid_run(
             grid_path=grid_path,
             sigma=cfg.sigma,
@@ -497,10 +524,12 @@ def main() -> None:
             no_gui=args.no_gui,
             start_pos=cfg.start_pos,
             random_seed=cfg.random_seed,
-            reward_function=cfg.reward_function,
         )
         run_cfg = TrainConfig(**{**cfg.__dict__, "start_pos": initial_pos})
 
+        # ------------------------------------------------------------------
+        # Optional W&B run setup
+        # ------------------------------------------------------------------
         if run_cfg.wandb:
             import wandb
 
@@ -510,19 +539,17 @@ def main() -> None:
                 config=run_cfg.__dict__,
                 reinit="finish_previous",
             )
-            # Pin the exact reward function source to this run so the choice
-            # (manhattan vs basic) AND the implementation can be reproduced
-            # later without checking out the same commit.
+            # Pin the exact reward function source to this run so the
+            # implementation can be reproduced later without checking out
+            # the same commit.
             #
             # The reward constants are *also* logged as scalar config keys
             # (under reward_constants.*) so they're filterable and sortable
             # in the W&B sweep/dashboard UI without parsing the source text.
             _rewards_src_path = Path(__file__).resolve().parent / "world" / "rewards.py"
             from world.rewards import (
-                MIN_TARGET_REWARD,
                 STEP_REWARD,
                 TARGET_REWARD,
-                WALL_OR_OBSTACLE_REWARD,
             )
             wandb.config.update(
                 {
@@ -530,13 +557,16 @@ def main() -> None:
                     "reward_constants": {
                         "STEP_REWARD": STEP_REWARD,
                         "TARGET_REWARD": TARGET_REWARD,
-                        "WALL_OR_OBSTACLE_REWARD": WALL_OR_OBSTACLE_REWARD,
-                        "MIN_TARGET_REWARD": MIN_TARGET_REWARD,
                     },
                 },
                 allow_val_change=True,
             )
 
+        # ------------------------------------------------------------------
+        # Optional optimal-policy reference
+        # ------------------------------------------------------------------
+        # For Q-learning/MC, train a VI agent on the same grid and reward so
+        # the trainer can record policy disagreement and optimality gaps.
         optimal_policy = None
         optimal_values = None
         if use_reference:
@@ -544,6 +574,9 @@ def main() -> None:
             optimal_policy = vi_agent.optimal_action_sets()
             optimal_values = dict(vi_agent.values)
 
+        # ------------------------------------------------------------------
+        # Train selected agent
+        # ------------------------------------------------------------------
         agent, history = trainer(
             env,
             reward_fn,
@@ -552,6 +585,11 @@ def main() -> None:
             optimal_values=optimal_values,
         )
 
+        # ------------------------------------------------------------------
+        # Post-training evaluation
+        # ------------------------------------------------------------------
+        # Evaluation runs fresh rollouts from the resolved start state with
+        # the trained/evaluation-mode agent.
         metrics = evaluate_policy_metrics(
             grid=grid_path,
             agent=agent,
@@ -564,10 +602,16 @@ def main() -> None:
             n_eval_episodes=run_cfg.eval_episodes,
         )
 
+        # Scalar values for end-of-training policy disagreement 
         policy_diff_scalar = (
             policy_disagreement(optimal_policy, agent) if optimal_policy is not None else None
         )
 
+        # ------------------------------------------------------------------
+        # Persist artifacts
+        # ------------------------------------------------------------------
+        # Save metrics, summaries, path visualisations, value/policy plots,
+        # and optional training curves/optimal-policy comparisons.
         prefix = make_artifact_prefix(grid_path, args.agent)
         save_run_artifacts(
             out_dir=args.out_dir,
@@ -585,6 +629,9 @@ def main() -> None:
             wandb_log=run_cfg.wandb,
         )
 
+        # ------------------------------------------------------------------
+        # Console summary and W&B cleanup
+        # ------------------------------------------------------------------
         diff_part = (
             f"  policy_diff={policy_diff_scalar:.3f}" if policy_diff_scalar is not None else ""
         )

@@ -1,314 +1,314 @@
-# RL in Practice - Group 5
+# Reinforcement Learning in Practice
 
-This repository contains the reinforcement learning challenge environment and the unified training entry point for Group 5.
+This repository contains a grid-world reinforcement learning environment, three implemented algorithms, and the experiment pipeline used to generate the report results.
 
-## Requirements
+Implemented algorithms:
+
+- Value Iteration
+- On-policy first-visit Monte Carlo control
+- Q-learning
+
+The repository is intended to be submitted and opened as a zip file. No Git setup is required to run it.
+
+## Setup From Zip
+
+Requirements:
 
 - Python 3.12 or newer
-- [`uv`](https://docs.astral.sh/uv/) for dependency and virtual environment management
+- `uv` for dependency and virtual environment management
 
-## Installation
+After extracting the zip file:
 
-Clone the repository and install the project dependencies:
-
-```bash
-git clone git@github.com:szelesteya/rl-in-practice-group-5.git
-cd rl-in-practice-group-5
+```powershell
+cd path\to\extracted\project
 uv sync
 ```
 
-## Usage
+All commands below should be run from the repository root, the folder that contains `train.py`, `run_experiments.py`, `pyproject.toml`, and `uv.lock`.
 
-`train.py` is the single training entry point. The first positional
-argument selects the agent (`value_iteration`, `q_learning`, `mc`,
-`off_policy_mc`, or `random`); the rest are the grid files to train on.
+## Running One Algorithm With `train.py`
 
-```bash
-uv run python train.py value_iteration grid_configs/A1_grid.npy --no_gui
-uv run python train.py q_learning      grid_configs/A1_grid.npy --no_gui --episodes 3000
-uv run python train.py mc              grid_configs/A1_grid.npy --no_gui --episodes 5000
-uv run python train.py off_policy_mc   grid_configs/A1_grid.npy --no_gui --episodes 5000
-uv run python train.py random          grid_configs/A1_grid.npy --no_gui
+Use `train.py` when you want to run one algorithm on one or more grid files with a chosen configuration.
+
+General form:
+
+```powershell
+uv run python train.py <algorithm> <grid file> [options]
 ```
 
-Useful shared options (available on every subcommand):
+Available subcommands:
+
+- `value_iteration`: model-based dynamic programming. It uses the known grid dynamics and reward function to compute an optimal value function and greedy policy.
+- `mc`: on-policy first-visit Monte Carlo control. It samples full episodes with an epsilon-greedy policy and updates Q-values from first-visit returns.
+- `q_learning`: model-free temporal-difference control. It updates Q-values after every transition using the Q-learning Bellman target.
+- `random`: uniform-random baseline for evaluation only.
+
+Useful shared options:
 
 - `--no_gui`: disable rendering for faster training.
-- `--sigma`: stochasticity of the environment.
+- `--sigma`: environment action stochasticity.
 - `--gamma`: discount factor.
-- `--eval_max_steps`: max environment steps per evaluation rollout. The per-training-episode step cap is `--max_episode_length` on each learning subcommand (see below).
-- `--eval_episodes`: number of evaluation rollouts to run after training.
-- `--fps`: GUI frame rate when rendering is enabled.
-- `--random_seed`: environment random seed.
-- `--start_pos`: agent start position as `col,row`.
-- `--out_dir`: directory for artifacts (defaults to `results/<agent>_<timestamp>/`).
-- `--reward {manhattan,basic}`: reward function to use (default `manhattan`). See [Reward Function](#reward-function).
-- `--compare_optimal`: pre-train a Value Iteration agent and use its policy as the optimality reference. Records per-episode policy disagreement (for `q_learning`, `mc`, `off_policy_mc`), emits a spatial `*_policy_diff.png` heatmap, and adds the end-of-training disagreement scalar to the evaluation summary. No-op for `value_iteration` and `random`.
-- `--wandb` / `--wandb_project NAME`: stream training metrics to Weights & Biases. The active reward-function source code and constants are pinned into `wandb.config` so each run is fully reproducible from the run alone. See [Hyperparameter Tuning](#hyperparameter-tuning).
+- `--eval_episodes`: number of post-training evaluation rollouts.
+- `--eval_max_steps`: maximum steps per evaluation rollout.
+- `--random_seed`: environment and agent seed.
+- `--start_pos`: fixed start position as `col,row`.
+- `--out_dir`: output directory for artifacts.
+- `--compare_optimal`: for `mc` and `q_learning`, train a Value Iteration reference and record policy disagreement.
 
-### Agent-specific options
+### Example: Value Iteration
 
-**Value Iteration only** (`value_iteration`):
+```powershell
+uv run python train.py value_iteration grid_configs/A1_grid.npy `
+  --no_gui `
+  --sigma 0.02 `
+  --gamma 0.9 `
+  --theta 1e-6 `
+  --vi_max_iter 1000 `
+  --eval_episodes 50 `
+  --eval_max_steps 1000 `
+  --out_dir results/value_iteration_example
+```
+
+Value Iteration-specific options:
 
 - `--theta`: Bellman convergence threshold.
-- `--vi_max_iter`: maximum Bellman sweeps.
+- `--vi_max_iter`: maximum number of Bellman sweeps.
 
-#### Shared tabular-Q-table flags
+### Example: On-Policy Monte Carlo
 
-`q_learning`, `mc`, and `off_policy_mc` all share the same flag skeleton —
-only the defaults differ. The flags are organised into argparse argument
-groups (visible in `--help`):
+```powershell
+uv run python train.py mc grid_configs/A1_grid.npy `
+  --no_gui `
+  --episodes 5000 `
+  --max_episode_length 2000 `
+  --alpha 0.5 `
+  --epsilon 0.2 `
+  --gamma 0.9 `
+  --sigma 0.1 `
+  --compare_optimal `
+  --out_dir results/mc_example
+```
 
-| Group | Flags | Notes |
-|---|---|---|
-| Episode budget | `--episodes`, `--max_episode_length` | `--max_episode_length` caps per-training-episode steps for all three learning agents (default 500 for `q_learning`, 2000 for `mc` / `off_policy_mc`). Evaluation rollouts are capped separately via the shared `--eval_max_steps`. |
-| Learning rate (alpha) | `--alpha`, `--alpha_min`, `--alpha_decay`, `--lr_schedule`, `--visit_count_c` | See learning-rate schedule note below. |
-| Exploration (epsilon) | `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon` | `--fixed_epsilon` disables decay entirely. |
-| Q-table initialisation | `--q_init`, `--q_init_noise` | Per-state-action initial value plus uniform tie-breaking noise. |
-| Training log | `--log_interval`, `--log_q_table` | `--log_interval 0` disables console logging; W&B logging uses its own interval. |
-| Early stopping | `--policy-stable-patience` | Default 50. Stops training once the tied-greedy policy is unchanged for that many consecutive episodes; pass `0` or a negative value to disable. Honoured by `q_learning`, `mc`, and `off_policy_mc` only — VI uses its own delta-based convergence and `random` has no policy. |
+MC-specific behavior:
 
-**Default-value table** (only the flags whose defaults differ between agents):
+- Samples complete episodes before updating Q-values.
+- Uses epsilon-greedy behavior during training.
+- Supports `--exploring_starts` to sample a random empty start cell for each training episode.
 
-| Flag | `q_learning` | `mc` | `off_policy_mc` |
-|---|---|---|---|
-| `--episodes` | 3000 | 5000 | 5000 |
-| `--max_episode_length` | 500 | 2000 | 2000 |
-| `--alpha` / `--alpha_min` / `--alpha_decay` | 0.5 / 0.05 / 0.999 | 0.5 / 0.05 / 0.9995 | 0.2 / 0.02 / 0.9998 |
-| `--epsilon` / `--epsilon_min` / `--epsilon_decay` | 1.0 / 0.05 / 0.995 | 0.2 / 0.01 / 0.9995 | 0.3 / 0.02 / 0.9998 |
+### Example: Q-learning
 
-#### Training-time exploration
+```powershell
+uv run python train.py q_learning grid_configs/A1_grid.npy `
+  --no_gui `
+  --episodes 3000 `
+  --max_episode_length 500 `
+  --alpha 0.5 `
+  --epsilon 1.0 `
+  --epsilon_decay 0.995 `
+  --gamma 0.9 `
+  --sigma 0.1 `
+  --compare_optimal `
+  --out_dir results/q_learning_example
+```
 
-- `--exploring_starts`: at the start of every training episode, sample a uniformly random empty cell as the agent's start (Sutton & Barto §5.4 exploring starts). Evaluation rollouts always start from `--start_pos`. Available for `q_learning`, `mc`, and `off_policy_mc`. Raises if the grid has no empty cells. The sampling RNG is seeded from `--random_seed + 1`, so a single `--random_seed` is enough to fully reproduce both the env stochasticity and the start sampling. The shared implementation lives in `agents.trainers.common.build_episode_start_picker` — a future variant (curriculum starts, distance-biased sampling, …) is a one-place change there, not three.
+Q-learning-specific behavior:
 
-#### `off_policy_mc` only
+- Updates Q-values after every environment step.
+- Uses epsilon-greedy exploration during training.
+- Switches to a greedy policy for evaluation after training.
 
-In addition to the shared block, off-policy MC adds:
+### Shared Q-table Options for MC and Q-learning
 
-- `--off_policy_update {weighted,alpha}`: textbook cumulative weighted-importance-sampling (`weighted`) vs constant-α importance-weighted updates (`alpha`, default).
-- `--importance_weight_clip`: max importance weight in `alpha` mode before multiplying by α; pass `None` to disable.
-- `--soft_target_epsilon`: ε for an epsilon-soft target policy. `0.0` (default) is the textbook deterministic greedy target. Must be strictly less than `--epsilon`. *Empirically the soft target has not outperformed the deterministic target on this setup; the flag is kept for completeness.*
+Both `mc` and `q_learning` support:
 
-> **Learning rate schedules.** `--lr_schedule exponential` (default) decays α per episode using `--alpha`/`--alpha_decay`/`--alpha_min`. `--lr_schedule constant` keeps `--alpha` fixed throughout. `--lr_schedule visit_count` uses the Robbins-Monro schedule `α = c / (c + N(s, a))` per state-action pair, with `c` set via `--visit_count_c`. The legacy `--fixed_alpha` flag has been replaced by `--lr_schedule constant`. Implementation in `agents/learning_rates.py`. For `off_policy_mc --off_policy_update weighted`, the schedule is **inert**: weighted importance sampling has its own intrinsic step size `W / C(s, a)` and layering a scheduler on top would double-count.
+- `--episodes`: number of training episodes.
+- `--max_episode_length`: maximum steps per training episode.
+- `--alpha`, `--alpha_min`, `--alpha_decay`: learning-rate parameters.
+- `--lr_schedule {exponential,constant,visit_count}`: learning-rate schedule.
+- `--visit_count_c`: offset for the visit-count learning-rate schedule.
+- `--epsilon`, `--epsilon_min`, `--epsilon_decay`, `--fixed_epsilon`: exploration settings.
+- `--q_init`, `--q_init_noise`: initial Q-values and optional tie-breaking noise.
+- `--policy-stable-patience`: early stop after the tied-greedy policy is stable for this many episodes.
+- `--log_interval`, `--log_q_table`: console logging options.
+- `--exploring_starts`: sample a uniformly random empty cell as the training start for each episode.
 
-> **MC training notes.** On-policy first-visit MC with ε-greedy is high-variance: at the default schedule a single 5000-episode run on `A1_grid` can swing between 0% and 100% eval success across random seeds. For more stable evaluation, increase `--episodes` (10k–20k) or aggregate across multiple `--random_seed` runs. Off-policy MC inherits the same variance profile.
+For the full list of options:
 
-For the canonical per-agent reference, run:
-
-```bash
+```powershell
+uv run python train.py value_iteration --help
+uv run python train.py mc --help
 uv run python train.py q_learning --help
-uv run python train.py off_policy_mc --help
 ```
 
-### Artifacts written per run
+## Reproducing Report Results With `run_experiments.py`
 
-Every run writes the following files to `--out_dir` (timestamped prefix `<grid>_<agent>_<timestamp>`):
+Use `run_experiments.py` to reproduce the structured experiment suite used for the report. It runs:
 
-- `*_metrics.json` — captured `TrainingHistory` plus the post-training evaluation metrics.
-- `*_evaluation_summary.txt` — human-readable success rate / discounted return / policy-disagreement scalar.
-- `*_path.png` and `*_path.txt` — agent rollout visualisation.
-- `*_value_policy.png` — value-and-policy heatmap (Value Iteration only; QL/MC derive these on demand).
-- `*_policy_diff.png` — spatial disagreement heatmap vs the VI reference (only when `--compare_optimal` is set, non-VI/random).
-- `*_performance_curves.png` and `*_hyperparam_traces.png` — per-episode training curves (non-VI agents only).
+- Value Iteration
+- On-policy MC
+- Q-learning
 
-## Hyperparameter Tuning
+across the predefined experiment groups in `experiments/specs.py`.
 
-There are two supported workflows, depending on what you want to do:
+To reproduce the report results with seeds `0` through `4`:
 
-### 1. Single-agent sweeps via `train.py` + Weights & Biases
-
-For ad-hoc parameter sweeps (sensitivity to one or two hyperparameters) the
-fastest path is to run `train.py` directly with `--wandb` and let W&B handle
-logging and grouping:
-
-```bash
-uv run python train.py q_learning grid_configs/A1_grid.npy \
-    --no_gui --episodes 5000 --compare_optimal \
-    --alpha 0.5 --alpha_decay 0.999 --lr_schedule exponential \
-    --epsilon 1.0 --epsilon_decay 0.995 \
-    --wandb --wandb_project rl-in-practice
+```powershell
+uv run python run_experiments.py --seeds 0 1 2 3 4
 ```
 
-Each run logs:
+This takes roughly 1 to 1.5 hours depending on the computer. The repository also includes a `report_results/` folder with generated outputs from the command above. The `report_results/aggregated_overview.md` file is used to create the summary table in the report.
 
-- per-episode `discounted_return`, `delta_q`, `epsilon`, `alpha` (and, for off-policy MC, `importance_weight`),
-- the `policy_diff` curve when `--compare_optimal` is set,
-- the full source of the active `world/rewards.py` and the reward constants under `wandb.config.reward_*`, so a sweep configuration on the W&B side can be re-run from a run snapshot alone.
+For a quick smoke test that keeps the same experiment structure but uses much smaller budgets (this command does not produce the report results):
 
-For a real grid search, drive the same command from a shell loop or a W&B
-sweep config — every CLI flag exposed above is mirrored as a `wandb.config`
-key and is therefore valid as a sweep parameter.
-
-### 2. Assignment-aligned report sweeps via `run_experiments.py`
-
-For the report's structured comparisons across all algorithms, use
-`run_experiments.py`. It runs every algorithm in `experiments/specs.py::ALGORITHMS`
-(currently `value_iteration`, `mc`, `q_learning`) against the predefined
-cases organised into setup groups:
-
-| Setup group | Cases |
-|---|---|
-| `default` | baseline defaults on the primary grid |
-| `grid_comparison` | one case per `--grid` argument |
-| `discount_factor` | `gamma=0.6`, `gamma=0.9` |
-| `stochasticity` | `sigma=0.02`, `sigma=0.5` |
-| `exploration_epsilon` | `low_fixed_epsilon` (0.1), `high_fixed_epsilon` (0.5), `decaying_epsilon` |
-| `learning_rate` | `low_fixed_alpha` (0.1), `high_fixed_alpha` (0.5), `decaying_alpha`, `visit_count` |
-| `mc_episode_length` | `max_episode_length=500`, `max_episode_length=5000` |
-
-```bash
-uv run python run_experiments.py --quick                            # smoke-test all cases
-uv run python run_experiments.py --seeds 0 1 2 --out_dir results/r1 # report-grade sweep
+```powershell
+uv run python run_experiments.py --quick
 ```
 
-Output: a master `results.csv`, per-run `overview.csv`/`overview.md`,
-seed-aggregated `aggregated_overview.csv`/`aggregated_overview.md`,
-per-group `results.csv`, and per-group plot subfolders (`learning_curves/`,
-`combined_learning_curves/`, `vi_convergence/`, `value_policy/`,
-`policy_disagreement/`). To add or modify cases, edit
-`experiments/specs.py::build_cases`.
+The report defaults, grids, algorithms, and experiment cases are defined in:
 
-> **Note.** `run_experiments.py` does not currently sweep `--reward`, the
-> `off_policy_mc` agent, or W&B logging — those code paths only run via
-> `train.py`. If you need them in a structured sweep, extend
-> `experiments/runner.py::_train_config` and `experiments/specs.py::ALGORITHMS`.
+```text
+experiments/specs.py
+```
+
+Important objects in that file:
+
+- `ALGORITHMS`: algorithms used by the report suite.
+- `DEFAULT_GRIDS`: default grids used by the suite.
+- `DEFAULTS`: report-grade default hyperparameters.
+- `QUICK_OVERRIDES`: shortened budgets used by `--quick`.
+- `build_cases()`: experiment groups and condition overrides.
+
+
+Default report-case hyperparameters:
+
+| Hyperparameter | Default value |
+|---|---:|
+| `sigma` | `0` |
+| `gamma` | `0.99` |
+| `eval_episodes` | `50` |
+| `eval_max_steps` | `1000` |
+| `random_seed` | `0` |
+| `exploring_starts` | `True` |
+| `alpha` | `0.2` |
+| `alpha_min` | `0.01` |
+| `alpha_decay` | `0.9995` |
+| `lr_schedule` | `visit_count` |
+| `visit_count_c` | `50` |
+| `epsilon` | `0.7` |
+| `epsilon_min` | `0.05` |
+| `epsilon_decay` | `0.99995` |
+| `fixed_epsilon` | `False` |
+| `ql_episodes` | `100000` |
+| `mc_episodes` | `100000` |
+| `max_episode_length` | `1500` |
+| `theta` | `1e-6` |
+| `vi_max_iter` | `1000` |
+| `policy_stable_patience` | `1000` |
+
+The experiment suite writes a master `results.csv`, per-group CSV files, overview summaries, aggregated summaries, and plots under the output directory. By default this is:
+
+```text
+results/assignment_experiments
+```
+
+You can choose another output directory:
+
+```powershell
+uv run python run_experiments.py --seeds 0 1 2 3 4 --out_dir results/report_reproduction
+```
+
+## Experiment Groups
+
+`run_experiments.py` uses the cases defined in `experiments/specs.py`:
+
+- `default`: baseline settings on the primary grid.
+- `grid_comparison`: baseline settings on each selected grid.
+- `discount_factor`: compares `gamma=0.6` and `gamma=0.9`.
+- `stochasticity`: compares `sigma=0.02` and `sigma=0.5`.
+- `exploration_epsilon`: compares low fixed epsilon, high fixed epsilon, and decaying epsilon.
+- `learning_rate`: compares fixed, decaying, and visit-count alpha schedules.
+- `mc_episode_length`: compares `max_episode_length=500` and `max_episode_length=5000`.
+
+## Outputs
+
+Single `train.py` runs write artifacts to `--out_dir`, including:
+
+- metrics JSON
+- evaluation summary text
+- rollout path image/text
+- value/policy plots
+- training curves for MC and Q-learning
+- policy disagreement plots when `--compare_optimal` is enabled
+
+`run_experiments.py` writes:
+
+- `results.csv`: master table of all runs
+- `<group>/results.csv`: per-group result tables
+- `overview.csv` and `overview.md`: per-run overview
+- `aggregated_overview.csv` and `aggregated_overview.md`: seed-aggregated overview
+- plot folders under each experiment group
 
 ## Project Structure
 
 ```text
 .
-├── agents/             # Agent implementations and per-agent trainer modules
-│   ├── learning_rates.py  # LearningRateSchedule abstraction (exponential / visit-count)
-│   └── trainers/          # Pure trainer functions (one module per agent)
-├── docs/               # Usage guides, runnable examples, assignment materials
-├── experiments/        # Assignment-aligned hyperparameter sweep suite
-├── grid_configs/       # Grid files used by the training script
-├── utils/              # Plotting, evaluation, artifact-writing, training logging
-├── world/              # Environment, grid, GUI, reward functions, helper code
-├── train.py            # Single training entry point (per-agent CLI subcommands)
-├── run_experiments.py  # Assignment sweep entry point (uses experiments/)
-├── pyproject.toml      # Project metadata and dependencies
-└── uv.lock             # Locked dependency versions
+|-- agents/
+|   |-- value_iteration_agent.py   # Value Iteration implementation
+|   |-- mc_agent.py                # On-policy first-visit MC agent
+|   |-- q_learning_agent.py        # Q-learning agent
+|   |-- learning_rates.py          # Learning-rate schedule implementations
+|   `-- trainers/                  # Training loops for each algorithm
+|-- docs/                          # Extra documentation and examples
+|-- experiments/
+|   |-- specs.py                   # Report defaults and experiment cases
+|   |-- runner.py                  # Executes cases and writes CSVs
+|   |-- plots.py                   # Generates report plots
+|   `-- overview.py                # Creates overview and aggregate summaries
+|-- grid_configs/                  # Saved NumPy grid files
+|-- report_results/                # Existing generated report outputs
+|-- utils/                         # Evaluation, plotting, logging, artifacts
+|-- world/                         # Grid-world environment, GUI, rewards, grid tools
+|-- train.py                       # Single-run CLI
+|-- run_experiments.py             # Report experiment CLI
+|-- pyproject.toml                 # Project dependencies and Python requirement
+`-- uv.lock                        # Locked dependency versions
 ```
 
-## Documentation
+## Environment and Reward
 
-- [Plotting utilities](docs/plotting.md): generic training-history plotting plus links to RL grid-world plotting references.
-- [Training logger](docs/training_logger.md): console logging utilities for iterative RL training diagnostics.
-- [RL plotting example](docs/examples/rl_plots_example.py): runnable demonstration of value/policy and algorithm-comparison plots.
+The environment is a grid world with encoded cells:
 
-## Agents
+- `0`: empty cell
+- `1`: boundary wall
+- `2`: obstacle
+- `3`: target
 
-All agents should inherit from `agents.BaseAgent`. The environment expects each agent to implement:
+The reward function is defined in `world/rewards.py`:
 
-- `update()`: update the agent after an environment step.
-- `take_action()`: choose the next action.
+- empty cell, boundary wall, obstacle: `-1`
+- target: `+10`
 
-The repository includes benchmark agents in `agents/null_agent.py` and `agents/random_agent.py`.
-
-## Utilities
-
-The `utils` package contains reusable helpers for training analysis:
-
-- `utils.plotting` defines `TrainingHistory`, `SubplotConfig`, `plot_training_history()`, and `plot_training_histories()` for visualising arbitrary training metrics.
-- `utils.rl_plots` defines `plot_value_function()`, `plot_policy()`, `plot_value_and_policy()`, `plot_policy_disagreement()`, `plot_algorithm_comparison()`, and `plot_hyperparameter_comparison()` for RL grid-world diagnostics.
-- `utils.training_logger` defines `TrainingLogger` and `ConsoleTrainingLogger` for printing compact training progress and optional Q-table snapshots.
-
-Runnable examples are available in `docs/examples/`:
-
-```bash
-uv run python docs/examples/plotting_example.py
-uv run python docs/examples/rl_plots_example.py
-uv run python docs/examples/training_logger_example.py
-```
-
-The plotting examples write generated figures to temporary directories. The logger example prints synthetic training progress in both scroll and frame modes.
+Wall and obstacle bumps keep the robot in place and receive the same step penalty.
 
 ## Grids
 
-Grid files live in `grid_configs/` and are stored as NumPy arrays. To create new grids, start the grid creator:
+Grid files are stored as NumPy arrays in `grid_configs/`.
 
-```bash
+To create or edit grids, run:
+
+```powershell
 uv run python world/grid_creator.py
 ```
 
-Then open `http://127.0.0.1:5000` in your browser. New grids are saved to `grid_configs/`.
+Then open the local URL printed by Flask, usually:
 
-## Environment
-
-The `world.Environment` class owns the interaction loop between an agent and a grid. The main methods are:
-
-- `reset()`: reset the environment state.
-- `step()`: advance the environment by one time step.
-- `evaluate_agent()`: evaluate an agent after training.
-
-Rendering is useful for debugging, but training without the GUI is much faster. Use `--no_gui` for longer training runs.
-
-## Reward Function
-
-`world.rewards` exposes two reward functions, selectable per run via
-`--reward {manhattan,basic}`. Both are functions of the attempted next
-grid cell.
-
-### `--reward basic` (assignment specification)
-
-The minimal reward described in the assignment brief:
-
-- Empty cell (`0`), boundary wall (`1`), obstacle (`2`): `STEP_REWARD = -3`
-- Target (`3`): `TARGET_REWARD = 10`
-
-Wall-bumps cost the same as a normal step because the agent simply stays
-in place — the assignment intentionally does not single them out.
-
-### `--reward manhattan` (default, distance-shaped)
-
-The default reward is shaped using the Manhattan distance from the
-agent's actual start to the target, plus a small distance-from-start
-bonus on empty cells that biases the agent towards making forward
-progress:
-
-| Cell | Reward |
-|---|---|
-| Empty (`0`) | `STEP_REWARD + (manhattan(start, agent) / manhattan(start, target)) * DISTANCE_FROM_START_REWARD` |
-| Wall / obstacle (`1`, `2`) | `WALL_OR_OBSTACLE_REWARD = -4` |
-| Target (`3`) | `max(MIN_TARGET_REWARD, DISTANCE_MULTIPLIER * manhattan(start, target))` |
-
-Constants live at the top of `world/rewards.py`:
-
-```python
-STEP_REWARD = -3
-WALL_OR_OBSTACLE_REWARD = -4
-MIN_TARGET_REWARD = 10
-DISTANCE_MULTIPLIER = 5.0
-DISTANCE_FROM_START_REWARD = 3.0
+```text
+http://127.0.0.1:5000
 ```
 
-Empty cells therefore range from `-3` near the start to `0` near the
-target, separately rewarding walls more harshly so wall-bumps no longer
-look like progress. The target reward scales with start-target Manhattan
-distance so larger grids retain a strong success signal without further
-reward shaping.
+## Notes
 
-> **Reproducibility.** When `--wandb` is enabled, the entire
-> `world/rewards.py` source plus all four constants are pinned into
-> `wandb.config` for every run, so a logged run remains re-runnable even
-> if the constants change later on `main`.
-
-## Value Iteration
-
-The tabular Value Iteration agent (`agents/value_iteration_agent.py`)
-uses the known grid dynamics, the stochasticity parameter `--sigma`,
-and whichever reward function `--reward` selects. The state is the
-robot position `(col, row)`; walls and obstacles are blocked, failed
-moves keep the robot in place, and reaching the target terminates the
-episode.
-
-Example command for the required A1 grid (low stochasticity, default
-Manhattan reward):
-
-```bash
-uv run python train.py value_iteration grid_configs/A1_grid.npy \
-    --no_gui --start_pos 1,12 --sigma 0.02 --gamma 0.9 \
-    --theta 1e-6 --vi_max_iter 1000 --eval_max_steps 1000 --eval_episodes 50 \
-    --out_dir results/vi_A1_low_stochasticity_sigma_0_02_gamma_0_9
-```
+- Training is much faster with `--no_gui`.
+- The report experiment defaults are in `experiments/specs.py`, not in `train.py`.
+- `train.py` defaults are convenient single-run defaults; `run_experiments.py` uses the report defaults from `experiments/specs.py`.
+- The `random` subcommand is a baseline and does not learn.

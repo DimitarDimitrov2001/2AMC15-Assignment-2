@@ -23,7 +23,7 @@ from world.grid_codes import (
     TARGET_CELL,
 )
 from world.helpers import ACTIONS_TO_DIRECTIONS
-from world.rewards import WALL_OR_OBSTACLE_REWARD
+from world.rewards import STEP_REWARD
 
 
 RewardFunction = Callable[[np.ndarray, tuple[int, int]], float]
@@ -78,6 +78,12 @@ class ValueIterationAgent(BaseAgent):
         if max_iterations < 1:
             raise ValueError("max_iterations must be at least 1")
 
+        # ------------------------------------------------------------------
+        # Store model and solver hyperparameters
+        # ------------------------------------------------------------------
+        # The grid is copied because VI mutates START cells into ordinary
+        # empty cells: after reset, the robot position is the state and the
+        # start marker should not behave like a separate cell type.
         self.grid = np.array(grid, copy=True)
         self.grid[self.grid == START_CELL] = EMPTY_CELL
         self.reward_fn = reward_fn
@@ -86,10 +92,17 @@ class ValueIterationAgent(BaseAgent):
         self.theta = float(theta)
         self.max_iterations = int(max_iterations)
 
+        # ------------------------------------------------------------------
+        # Discover state space
+        # ------------------------------------------------------------------
         # All empty cells and target cells are valid states. Walls/obstacles
         # cannot be occupied, so they are not states.
         self.states = self._discover_states()
         self.target_states = {state for state in self.states if int(self.grid[state]) == TARGET_CELL}
+
+        # Values start at zero for every valid state. The greedy policy is
+        # derived only after the value function has converged or hit the
+        # iteration limit.
         self.values = {state: 0.0 for state in self.states}
         self.policy: Policy = {}
         self.history: TrainingHistory | None = None
@@ -111,13 +124,16 @@ class ValueIterationAgent(BaseAgent):
         return states
 
     def _is_inside_grid(self, pos: Position) -> bool:
+        """Whether ``pos`` is a valid array index in the grid."""
         return 0 <= pos[0] < self.grid.shape[0] and 0 <= pos[1] < self.grid.shape[1]
 
     def _next_position(self, state: Position, action: int) -> Position:
+        """Apply an action direction without checking walls or bounds."""
         direction = ACTIONS_TO_DIRECTIONS[action]
         return state[0] + direction[0], state[1] + direction[1]
 
     def _is_blocked_cell(self, pos: Position) -> bool:
+        """Whether ``pos`` is an in-grid wall/obstacle cell."""
         return int(self.grid[pos]) in (BOUNDARY_WALL_CELL, OBSTACLE_CELL)
 
     # ------------------------------------------------------------------
@@ -126,6 +142,10 @@ class ValueIterationAgent(BaseAgent):
 
     def _actual_action_probability(self, intended_action: int, actual_action: int) -> float:
         """Probability that an intended action becomes a specific actual action."""
+        # The environment executes the intended action with probability
+        # 1 - sigma, then adds uniformly distributed action noise with total
+        # mass sigma. The intended action also receives its share of that
+        # uniform noise.
         probability = self.sigma / len(ACTIONS_TO_DIRECTIONS)
         if actual_action == intended_action:
             probability += 1.0 - self.sigma
@@ -145,6 +165,8 @@ class ValueIterationAgent(BaseAgent):
         if intended_action not in ACTIONS_TO_DIRECTIONS:
             raise ValueError(f"Unknown action: {intended_action}")
         if state in self.target_states:
+            # Terminal states have no outgoing reward-bearing transitions in
+            # the Bellman update; their value is fixed at zero.
             return [TransitionOutcome(1.0, state, 0.0, True, intended_action)]
 
         outcomes: list[TransitionOutcome] = []
@@ -153,11 +175,17 @@ class ValueIterationAgent(BaseAgent):
             candidate = self._next_position(state, actual_action)
 
             if not self._is_inside_grid(candidate):
+                # Moving outside the array is equivalent to bumping into a
+                # wall: the agent stays in the same state and receives the
+                # step penalty.
                 outcomes.append(
-                    TransitionOutcome(probability, state, float(WALL_OR_OBSTACLE_REWARD), False, actual_action)
+                    TransitionOutcome(probability, state, float(STEP_REWARD), False, actual_action)
                 )
                 continue
 
+            # In-grid candidates use the same reward function as sampled
+            # environment rollouts. ``_resolve_move`` then decides whether
+            # the attempted move changes state or terminates.
             reward = float(self.reward_fn(self.grid, candidate))
             next_state, terminated = self._resolve_move(state, candidate)
             outcomes.append(TransitionOutcome(probability, next_state, reward, terminated, actual_action))
@@ -168,8 +196,10 @@ class ValueIterationAgent(BaseAgent):
         """Translate an attempted next cell into the actual next state."""
         cell_value = int(self.grid[candidate])
         if cell_value in (BOUNDARY_WALL_CELL, OBSTACLE_CELL):
+            # Wall/obstacle bumps leave the robot in place.
             return current_state, False
         if cell_value == TARGET_CELL:
+            # Reaching the delivery target ends the episode.
             return candidate, True
         if cell_value == EMPTY_CELL:
             return candidate, False
@@ -186,6 +216,9 @@ class ValueIterationAgent(BaseAgent):
         """
         table = self.values if values is None else values
         expected_return = 0.0
+
+        # Sum over every stochastic outcome of the intended action. Terminal
+        # outcomes have no gamma * V(next_state) continuation term.
         for outcome in self.transition_outcomes(state, action):
             continuation = 0.0 if outcome.terminated else self.gamma * table[outcome.next_state]
             expected_return += outcome.probability * (outcome.reward + continuation)
@@ -193,17 +226,26 @@ class ValueIterationAgent(BaseAgent):
 
     def _best_state_value(self, state: Position, old_values: ValueTable) -> float:
         """Compute V(s) = max_a Q(s, a)."""
+        # Terminal target states are defined to have zero continuation value.
         if state in self.target_states:
             return 0.0
         return max(self.action_value(state, action, old_values) for action in ACTIONS_TO_DIRECTIONS)
 
     def train(self) -> TrainingHistory:
         """Run Bellman optimality sweeps until convergence or iteration limit."""
+        # ------------------------------------------------------------------
+        # Convergence traces
+        # ------------------------------------------------------------------
+        # The trainer/plotting code treats each Bellman sweep like an episode
+        # index so VI can share the same TrainingHistory structure as agents
+        # that learn from sampled episodes.
         episodes: list[int] = []
         max_deltas: list[float] = []
         mean_deltas: list[float] = []
 
         for iteration in range(1, self.max_iterations + 1):
+            # Synchronous value iteration: every state's new value is computed
+            # from a frozen copy of the previous sweep's values.
             old_values = self.values.copy()
             new_values: ValueTable = {}
             state_deltas: list[float] = []
@@ -220,10 +262,17 @@ class ValueIterationAgent(BaseAgent):
             max_deltas.append(delta_v)
             mean_deltas.append(mean_delta_v)
 
+            # Stop when the largest single-state value change is below the
+            # requested Bellman residual threshold.
             if delta_v < self.theta:
                 self.converged = True
                 break
 
+        # ------------------------------------------------------------------
+        # Final policy and history
+        # ------------------------------------------------------------------
+        # Once values are fixed, derive a greedy action for every non-terminal
+        # state and package convergence diagnostics for plotting/reporting.
         self.iterations = episodes[-1]
         self.final_delta_v = max_deltas[-1]
         self.policy = self._derive_policy()
@@ -255,6 +304,9 @@ class ValueIterationAgent(BaseAgent):
         for state in self.states:
             if state in self.target_states:
                 continue
+            # Use the final value table to evaluate each action, then keep the
+            # action with the largest expected return. Ties are resolved by
+            # Python's ``max`` insertion order, which follows ACTIONS order.
             action_values = {action: self.action_value(state, action, self.values) for action in ACTIONS_TO_DIRECTIONS}
             policy[state] = max(action_values, key=action_values.get)
         return policy
@@ -274,6 +326,9 @@ class ValueIterationAgent(BaseAgent):
         for state in self.states:
             if state in self.target_states:
                 continue
+            # This is used as the reference for Q-learning/MC policy
+            # disagreement. Returning all near-tied optimal actions avoids
+            # penalising a learner for choosing an equally good action.
             action_values = {
                 action: self.action_value(state, action, self.values)
                 for action in ACTIONS_TO_DIRECTIONS
@@ -286,6 +341,8 @@ class ValueIterationAgent(BaseAgent):
 
     def take_action(self, state: Position) -> int:
         """Return the greedy action from the trained policy."""
+        # Evaluation code calls this just like it calls model-free agents.
+        # VI has no exploration mode: once trained, the policy is fixed.
         if not self.policy:
             raise RuntimeError("ValueIterationAgent must be trained before taking actions.")
         if state not in self.policy:
