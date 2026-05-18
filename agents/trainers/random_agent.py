@@ -22,10 +22,7 @@ def train(
     optimal_values: dict[tuple[int, int], float] | None = None,
 ) -> tuple[RandomAgent, TrainingHistory | None]:
     """Return a fresh RandomAgent. Random does not learn, so history is ``None``.
-
-    ``optimal_policy`` and ``optimal_values`` are accepted for
-    trainer-dispatch uniformity but ignored — the random baseline has no
-    learnable policy or value function to compare.
+    
     """
     del env, reward_fn, cfg, optimal_policy, optimal_values
     return RandomAgent(), None

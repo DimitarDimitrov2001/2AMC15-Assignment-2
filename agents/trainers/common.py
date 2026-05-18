@@ -29,7 +29,7 @@ from utils.artifacts import (
     write_json,
 )
 from utils.plotting import TrainingHistory
-from world import Environment, build_basic_reward_function, build_manhattan_reward_function, find_target_position
+from world import Environment, build_basic_reward_function
 from world.grid_codes import EMPTY_CELL
 
 Position = tuple[int, int]
@@ -74,26 +74,21 @@ class TrainConfig:
     q_init: float = 0.0
     q_init_noise: float = 1e-6
     exploring_starts: bool = False
-    off_policy_update: str = "alpha"
-    importance_weight_clip: float | None = 10.0
-    soft_target_epsilon: float = 0.0
     theta: float | None = None
     vi_max_iter: int | None = None
-    reward_function: str = "manhattan"
     wandb: bool = False
     wandb_project: str = "rl-in-practice"
     # Number of consecutive episodes whose tied-greedy policy must be
     # unchanged before the trainer breaks out of the episode loop.
     # ``None`` (or any non-positive int mapped to ``None`` by the CLI)
     # disables the criterion and runs the full episode budget. Honoured
-    # only by trainers that learn an episode-by-episode policy (QL,
-    # on-policy MC, off-policy MC); VI and the random baseline ignore
-    # it.
+    # only by trainers that learn an episode-by-episode policy (QL and
+    # on-policy MC); VI and the random baseline ignore it.
     policy_stable_patience: int | None = 50
 
 
 # ---------------------------------------------------------------------------
-# Shared trainer helpers — deduplicated from mc / q_learning / off_policy_mc
+# Shared trainer helpers — deduplicated from mc / q_learning
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +265,7 @@ def build_episode_start_picker(env: Environment, cfg: TrainConfig) -> Callable[[
     """Return a 0-arg callable that yields the next training-episode start.
 
     Encapsulates Sutton & Barto §5.4 exploring starts in one place so every
-    tabular trainer (QL, on-policy MC, off-policy MC) handles it identically.
+    tabular trainer (QL and on-policy MC) handles it identically.
 
     * If ``cfg.exploring_starts`` is False, the callable always returns
       ``cfg.start_pos`` (the existing fixed-start behaviour).
@@ -321,9 +316,6 @@ def _placeholder_reward_function(_grid: np.ndarray, _agent_pos: Position) -> flo
     return 0.0
 
 
-REWARD_FUNCTIONS = ("manhattan", "basic")
-
-
 def setup_grid_run(
     grid_path: Path,
     sigma: float,
@@ -331,22 +323,12 @@ def setup_grid_run(
     no_gui: bool,
     start_pos: Position | None,
     random_seed: int,
-    reward_function: str = "manhattan",
 ) -> tuple[Environment, Position, RewardFunction]:
     """Construct the environment, choose the start position, build the reward.
 
-    ``reward_function`` selects which reward scheme to use:
-      * ``"manhattan"`` — -1 per step, -5 for walls/obstacles, target reward
-        scaled to 2 * Manhattan(start, target) (min 10).
-      * ``"basic"`` — -1 for every step (including wall bumps), +10 for
-        reaching the target (the assignment spec default).
+    The reward is the assignment-spec reward: -1 for every step
+    (including wall bumps), +10 for reaching the target.
     """
-    if reward_function not in REWARD_FUNCTIONS:
-        raise ValueError(
-            f"Unknown reward function {reward_function!r}; "
-            f"choose from {REWARD_FUNCTIONS}"
-        )
-
     env = Environment(
         grid_fp=grid_path,
         no_gui=no_gui,
@@ -359,12 +341,7 @@ def setup_grid_run(
     initial_pos = env.reset()
     env.agent_start_pos = initial_pos
 
-    if reward_function == "basic":
-        reward_fn = build_basic_reward_function()
-    else:
-        target_pos = find_target_position(env.grid)
-        reward_fn = build_manhattan_reward_function(initial_pos, target_pos)
-
+    reward_fn = build_basic_reward_function()
     env.reward_fn = reward_fn
     return env, initial_pos, reward_fn
 
@@ -452,7 +429,6 @@ def save_run_artifacts(
             "alpha",
             "alpha_min",
             "alpha_max",
-            "importance_weight",
         }
 
         perf_metrics = {k: v for k, v in history.metrics.items() if k in _PERFORMANCE_KEYS}

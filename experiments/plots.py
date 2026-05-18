@@ -21,6 +21,14 @@ from utils.rl_plots import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Plot styling and output folders
+#
+# These constants keep labels, colors, and subdirectory names consistent
+# across all figures produced for the report suite.
+# ---------------------------------------------------------------------------
+
+
 ALGO_LABELS = {
     "value_iteration": "Value Iteration",
     "mc": "On-policy MC",
@@ -78,6 +86,11 @@ CONDITION_TITLES = {
     "decaying_alpha": "decaying alpha",
     "visit_count": "visit-count schedule",
 }
+
+
+# ---------------------------------------------------------------------------
+# Human-readable labels and filenames
+# ---------------------------------------------------------------------------
 
 
 def _pretty_grid(grid: str) -> str:
@@ -180,6 +193,7 @@ def _pretty_scene_title(
 
 
 def _slug(text: str) -> str:
+    """Make a condition/group label safe for filenames."""
     return (
         text.replace(" ", "_")
         .replace("/", "_")
@@ -190,12 +204,14 @@ def _slug(text: str) -> str:
 
 
 def _plot_dir(out_dir: Path, group: str, plot_type: str) -> Path:
+    """Return and create the output directory for one plot family."""
     path = out_dir / group / PLOT_DIRS[plot_type]
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _first_seed_results(results: list[RunResult]) -> list[RunResult]:
+    """Select one representative seed for spatial/value plots."""
     if not results:
         return []
     first_seed = min(int(r.row["seed"]) for r in results)
@@ -203,11 +219,13 @@ def _first_seed_results(results: list[RunResult]) -> list[RunResult]:
 
 
 def _history_metrics(history: dict[str, Any], desired: list[str]) -> list[str]:
+    """Return desired metric names that are available in a history."""
     available = history.get("metrics", {})
     return [metric for metric in desired if metric in available]
 
 
 def _smooth(values: list[float], window: int) -> np.ndarray:
+    """Smooth a metric trace with a simple moving average."""
     if window <= 1:
         return np.array(values, dtype=float)
     arr = np.array(values, dtype=float)
@@ -216,6 +234,7 @@ def _smooth(values: list[float], window: int) -> np.ndarray:
 
 
 def _history_metric_values(history: dict[str, Any], metric: str) -> tuple[list[int], list[float]] | None:
+    """Extract aligned episode and metric arrays from a TrainingHistory dict."""
     metrics = history.get("metrics", {})
     if metric not in metrics:
         return None
@@ -228,6 +247,7 @@ def _history_metric_values(history: dict[str, Any], metric: str) -> tuple[list[i
 
 
 def _condition_line_styles(conditions: list[str]) -> dict[str, Any]:
+    """Assign stable line styles to conditions within one figure."""
     styles: dict[str, Any] = {}
     ordered = ["default"] if "default" in conditions else []
     ordered.extend(condition for condition in conditions if condition not in ordered)
@@ -240,6 +260,7 @@ def _smoothed_metric_matrix(
     histories: list[dict[str, Any]],
     metric: str,
 ) -> tuple[list[int], np.ndarray] | None:
+    """Build a seed-by-episode matrix for one smoothed metric."""
     series = [
         metric_values
         for history in histories
@@ -287,6 +308,11 @@ def _save_combined_curve_figure(
     if not available_metrics:
         return
 
+    # ------------------------------------------------------------------
+    # Figure layout
+    # ------------------------------------------------------------------
+    # Combined figures show one subplot per metric. Policy-diff-only figures
+    # use a narrower layout and stack legends vertically.
     n_metrics = len(available_metrics)
     if n_metrics == 1:
         figsize = (5.8, 3.8)
@@ -305,6 +331,10 @@ def _save_combined_curve_figure(
     # so the bottom legend can show one entry per condition mapped to its
     # linestyle and hyperparameter label.
     condition_styles: dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Draw mean curves and optional seed variance
+    # ------------------------------------------------------------------
     for ax, metric in zip(axes, available_metrics):
         for curve in curves:
             matrix_data = _smoothed_metric_matrix(curve["histories"], metric)
@@ -343,6 +373,10 @@ def _save_combined_curve_figure(
 
     fig.suptitle(title, fontsize=11)
 
+    # ------------------------------------------------------------------
+    # Build legends
+    # ------------------------------------------------------------------
+    # Colors encode algorithms. Linestyles encode conditions/hyperparameters.
     algos_present = [a for a in sorted(LEARNING_ALGORITHMS) if a in algos_in_figure]
     algo_handles = [
         Line2D([0], [0], color=ALGO_COLORS[a], lw=1.8, label=ALGO_LABELS[a])
@@ -467,6 +501,8 @@ def _save_combined_with_policy_diff(
     sibling directory with the same filename minus the ``_combined_learning_curves``
     suffix.
     """
+    # Main combined figure: returns, Q-value movement, and policy disagreement
+    # when those metrics are present in the histories.
     combined_path = _plot_dir(out_dir, group, "combined_learning_curves") / filename
     _save_combined_curve_figure(
         curves,
@@ -476,6 +512,8 @@ def _save_combined_with_policy_diff(
         show_std=show_std,
     )
 
+    # Companion figure: policy disagreement only. This is easier to inspect in
+    # the report when the combined 3-panel figure is too dense.
     policy_diff_filename = filename.replace(
         "_combined_learning_curves.png", "_policy_diff.png"
     )
@@ -495,6 +533,12 @@ def _save_combined_with_policy_diff(
 
 
 def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
+    """Save per-condition learning curves for MC and Q-learning."""
+    # ------------------------------------------------------------------
+    # Group histories by scene and algorithm
+    # ------------------------------------------------------------------
+    # A scene is one setup group + condition + grid. Each algorithm can have
+    # multiple histories when the suite was run with multiple seeds.
     curve_results = [
         r for r in results
         if r.row["algorithm"] in LEARNING_ALGORITHMS and r.history is not None
@@ -520,6 +564,9 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
             scene_keys[(group, condition, grid)].append(algo)
 
     for (group, condition, grid), algos in scene_keys.items():
+        # ------------------------------------------------------------------
+        # Determine available metrics and figure shape
+        # ------------------------------------------------------------------
         # find which metrics are available across all seeds for any algo
         available_metrics: list[str] = []
         for m in desired:
@@ -543,6 +590,9 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
         else:
             axes = list(axes)
 
+        # ------------------------------------------------------------------
+        # Plot one curve per algorithm, averaged across seeds
+        # ------------------------------------------------------------------
         algos_in_figure: list[str] = []
         for ax, metric in zip(axes, available_metrics):
             for algo in algos:
@@ -581,6 +631,8 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
             for a in algos_present
         ]
         if handles:
+            # The legend title names the hyperparameter setting for this
+            # condition, while colors identify algorithms.
             annotation = _hyperparam_annotation(group, condition)
             fig.legend(
                 handles=handles,
@@ -595,6 +647,8 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
 
         fig.subplots_adjust(left=0.08, right=0.96, top=0.84, bottom=0.30, wspace=0.28)
         try:
+            # A failed plot should not abort the whole report run; later plot
+            # families and CSV/overview outputs are still useful.
             path = (
                 _plot_dir(out_dir, group, "learning_curves")
                 / f"{_slug(condition)}_{grid}_learning_curves.png"
@@ -606,6 +660,12 @@ def _save_learning_curves(results: list[RunResult], out_dir: Path) -> None:
 
 
 def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> None:
+    """Save cross-condition learning-curve comparison figures."""
+    # ------------------------------------------------------------------
+    # Index histories by group/condition/grid/algorithm/seed
+    # ------------------------------------------------------------------
+    # Combined figures need to assemble curves from multiple experiment cases,
+    # so this lookup keeps every history addressable by its experimental keys.
     curve_results = [
         r for r in results
         if r.row["algorithm"] in LEARNING_ALGORITHMS and r.history is not None
@@ -640,6 +700,7 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
         histories: list[dict[str, Any]],
         styles: dict[str, Any],
     ) -> dict[str, Any]:
+        """Package curve metadata in the shape expected by the renderer."""
         return {
             "label": f"{ALGO_LABELS[algorithm]} | {condition}",
             "condition": condition,
@@ -650,6 +711,8 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
 
     for group in group_order:
         if group == "default":
+            # Default group: compare MC and Q-learning on the baseline setting,
+            # both per seed and aggregated across all seeds.
             seeds = sorted({seed for _grid, _algo, seed in default_histories})
             grids = sorted({grid for grid, _algo, _seed in default_histories})
             styles = _condition_line_styles(["default"])
@@ -714,6 +777,8 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
 
         group_keys = [key for key in by_run if key[0] == group]
         if group == "grid_comparison":
+            # Grid-comparison group: condition is effectively the grid name, so
+            # linestyles identify grids while colors still identify algorithms.
             combos = sorted({(algorithm, seed) for _group, _condition, _grid, algorithm, seed in group_keys})
             grid_conditions = sorted({_grid for _group, _condition, _grid, _algorithm, _seed in group_keys})
             styles = _condition_line_styles(grid_conditions)
@@ -778,6 +843,8 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
                 )
             continue
 
+        # Hyperparameter groups: include the default baseline alongside each
+        # condition so every plot shows "what changed" relative to baseline.
         grids = sorted({grid for _group, _condition, grid, _algorithm, _seed in group_keys})
         seeds = sorted({seed for _group, _condition, _grid, _algorithm, seed in group_keys})
         conditions = ["default"] + [
@@ -889,6 +956,10 @@ def _save_combined_learning_curves(results: list[RunResult], out_dir: Path) -> N
 
 
 def _save_vi_convergence(results: list[RunResult], out_dir: Path) -> None:
+    """Save VI Bellman-residual convergence plots for selected groups."""
+    # VI convergence is most useful for dynamics/discount changes. Use one
+    # representative seed because VI itself is deterministic for a fixed grid
+    # and hyperparameter setting.
     selected_groups = {"discount_factor", "stochasticity"}
     first_seed = _first_seed_results(results)
     for group in selected_groups:
@@ -901,6 +972,8 @@ def _save_vi_convergence(results: list[RunResult], out_dir: Path) -> None:
         if len(histories) < 2:
             continue
         try:
+            # Plot delta_v on a log scale so convergence-rate differences are
+            # visible across many orders of magnitude.
             fig, _ = plot_algorithm_comparison(
                 histories,
                 metrics=["delta_v"],
@@ -916,6 +989,9 @@ def _save_vi_convergence(results: list[RunResult], out_dir: Path) -> None:
 
 
 def _save_value_policy_plots(results: list[RunResult], out_dir: Path) -> None:
+    """Save spatial value-function and greedy-policy plots."""
+    # Spatial plots are saved for the first seed only to avoid producing many
+    # near-duplicate images in multi-seed report runs.
     for result in _first_seed_results(results):
         if not result.values or not result.policy:
             continue
@@ -924,6 +1000,8 @@ def _save_value_policy_plots(results: list[RunResult], out_dir: Path) -> None:
         condition = result.row["condition"]
         algorithm = result.row["algorithm"]
         try:
+            # Re-load the original grid file so plotting sees walls, obstacles,
+            # and targets in their original encoded form.
             fig, _ = plot_value_and_policy(
                 grid,
                 result.values,
@@ -941,6 +1019,9 @@ def _save_value_policy_plots(results: list[RunResult], out_dir: Path) -> None:
 
 
 def _save_policy_disagreement_plots(results: list[RunResult], out_dir: Path) -> None:
+    """Save spatial learned-policy-vs-VI disagreement heatmaps."""
+    # Only model-free agents have a meaningful disagreement plot; VI is the
+    # reference policy itself.
     for result in _first_seed_results(results):
         algorithm = result.row["algorithm"]
         if algorithm == "value_iteration" or not result.optimal_policy or not result.policy:
@@ -949,6 +1030,8 @@ def _save_policy_disagreement_plots(results: list[RunResult], out_dir: Path) -> 
         group = result.row["setup_group"]
         condition = result.row["condition"]
         try:
+            # The optimal policy is a set of acceptable optimal actions per
+            # state, so tied VI-optimal actions are not counted as mistakes.
             fig, _ = plot_policy_disagreement(
                 grid,
                 result.optimal_policy,
@@ -969,6 +1052,9 @@ def save_all(results: list[RunResult], out_dir: Path) -> None:
     """Save all report-oriented plots."""
     if not results:
         return
+
+    # Keep the public entry point small: each helper owns one plot family and
+    # writes into its corresponding per-group subdirectory.
     _save_learning_curves(results, out_dir)
     _save_combined_learning_curves(results, out_dir)
     _save_vi_convergence(results, out_dir)
