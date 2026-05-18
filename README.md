@@ -143,11 +143,12 @@ key and is therefore valid as a sweep parameter.
 
 For the report's structured comparisons across all algorithms, use
 `run_experiments.py`. It runs every algorithm in `experiments/specs.py::ALGORITHMS`
-(currently `value_iteration`, `mc`, `q_learning`) against the 14 predefined
-cases organised into 6 setup groups:
+(currently `value_iteration`, `mc`, `q_learning`) against the predefined
+cases organised into setup groups:
 
 | Setup group | Cases |
 |---|---|
+| `default` | baseline defaults on the primary grid |
 | `grid_comparison` | one case per `--grid` argument |
 | `discount_factor` | `gamma=0.6`, `gamma=0.9` |
 | `stochasticity` | `sigma=0.02`, `sigma=0.5` |
@@ -160,9 +161,11 @@ uv run python run_experiments.py --quick                            # smoke-test
 uv run python run_experiments.py --seeds 0 1 2 --out_dir results/r1 # report-grade sweep
 ```
 
-Output: a master `results.csv`, per-group `results.csv`, and per-group
-plots (metric bars, learning curves, VI convergence, value/policy panels,
-policy-disagreement heatmaps). To add or modify cases, edit
+Output: a master `results.csv`, per-run `overview.csv`/`overview.md`,
+seed-aggregated `aggregated_overview.csv`/`aggregated_overview.md`,
+per-group `results.csv`, and per-group plot subfolders (`learning_curves/`,
+`combined_learning_curves/`, `vi_convergence/`, `value_policy/`,
+`policy_disagreement/`). To add or modify cases, edit
 `experiments/specs.py::build_cases`.
 
 > **Note.** `run_experiments.py` does not currently sweep `--reward`, the

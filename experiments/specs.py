@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
     "max_episode_length": 1500,
     "theta": 1e-6,
     "vi_max_iter": 1000,
+    "policy_stable_patience": 1000,
 }
 
 QUICK_OVERRIDES: dict[str, Any] = {
@@ -105,9 +106,16 @@ def defaults(*, quick: bool = False) -> dict[str, Any]:
 
 
 def build_cases(grids: list[Path] | tuple[Path, ...] = DEFAULT_GRIDS) -> list[ExperimentCase]:
-    """Build the six assignment setup groups."""
+    """Build the assignment setup groups."""
     primary_grid = grids[0]
-    cases: list[ExperimentCase] = []
+    cases: list[ExperimentCase] = [
+        ExperimentCase(
+            group="default",
+            condition="default",
+            grid_path=primary_grid,
+            overrides={},
+        )
+    ]
 
     for grid in grids:
         cases.append(
