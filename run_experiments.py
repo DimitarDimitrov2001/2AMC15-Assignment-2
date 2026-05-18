@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from experiments.overview import print_and_save_overview
 from experiments.plots import save_all
 from experiments.runner import run_suite
 from experiments.specs import DEFAULT_GRIDS, build_cases, defaults
@@ -63,6 +64,8 @@ def main() -> None:
     if not args.no_plots:
         print("\nGenerating plots...")
         save_all(results, args.out_dir)
+
+    print_and_save_overview(results, args.out_dir)
 
     print(f"\nDone. Results in {args.out_dir}")
 
