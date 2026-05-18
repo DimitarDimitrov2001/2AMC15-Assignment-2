@@ -10,7 +10,7 @@ from world.grid_codes import BOUNDARY_WALL_CELL, EMPTY_CELL, OBSTACLE_CELL, TARG
 
 RewardFunction = Callable[[np.ndarray, tuple[int, int]], int]
 
-STEP_REWARD = -3
+STEP_REWARD = -1
 TARGET_REWARD = 10
 
 WALL_OR_OBSTACLE_REWARD = -4
