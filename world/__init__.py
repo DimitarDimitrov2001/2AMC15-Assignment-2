@@ -10,6 +10,8 @@ from world.grid_codes import (
 )
 from world.gui import GUI
 from world.environment import Environment
+from world.minimal_environment import MinimalEnvironment
+from world.continuous_environment import ContinuousEnvironment, N_ACTIONS
 from world.rewards import build_basic_reward_function
 
 
@@ -18,11 +20,14 @@ GRID_CONFIGS_FP.mkdir(parents=True, exist_ok=True)
 
 __all__ = [
     "BOUNDARY_WALL_CELL",
+    "MinimalEnvironment",
+    "ContinuousEnvironment",
     "EMPTY_CELL",
     "Environment",
     "GRID_CONFIGS_FP",
     "GUI",
     "Grid",
+    "N_ACTIONS",
     "OBSTACLE_CELL",
     "START_CELL",
     "TARGET_CELL",
