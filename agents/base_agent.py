@@ -1,38 +1,46 @@
-"""Agent Base.
+from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+
+"""
+Agent Base.
 We define the base class for all agents in this file.
 """
-from abc import ABC, abstractmethod
+@dataclass(frozen=True)
+class Transition:
+    # One interaction (state -> action -> reward -> next_state) between the agent and environment
+    state: np.ndarray
+    action: int
+    reward: float
+    next_state: np.ndarray
+    terminated: bool
+    truncated: bool
+    info: dict[str, Any]
 
 
 class BaseAgent(ABC):
-    def __init__(self):
-        """Base agent. All other agents should build on this class.
-
-        As a reminder, you are free to add more methods/functions to this class
-        if your agent requires it.
-        """
-
+    # Base interface for all agents. Trainer only knows this interface
     @abstractmethod
-    def take_action(self, state: tuple[int, int]) -> int:
-        """Any code that does the action should be included here.
-
-        Args:
-            state: The updated position of the agent.
-        """
+    def select_action(self, state: np.ndarray, training: bool = True) -> int:
+        # Choose one discrete action
         raise NotImplementedError
 
-    def update(self, state: tuple[int, int], reward: float, action: int) -> None:
-        """Process a reward and update the agent's policy/value estimates.
+    def observe(self, transition: Transition) -> None:
+        # Receive one transition from trainer
+        return None
 
-        Default implementation is a no-op. Agents that learn from per-step
-        transitions (e.g. temporal-difference methods like Q-learning) should
-        override this. Monte Carlo accumulates updates per episode and Value
-        Iteration trains before any rollout, so both inherit the no-op.
+    def update(self) -> dict[str, float]:
+        # Do one learning update
+        return {}
 
-        Args:
-            state: The updated position of the agent.
-            reward: The value returned by the environment as a reward.
-            action: The action that was taken by the agent.
-        """
-        return
+    def on_episode_start(self, episode: int) -> None:
+        # Option to do something at the start of each episode
+        return None
+
+    def on_episode_end(self, episode: int, episode_metrics: dict[str, float]) -> dict[str, float]:
+        # Option to do something at the end of each episode
+        return {}

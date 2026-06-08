@@ -1,5 +1,4 @@
-from agents.base_agent import BaseAgent
-from agents.value_iteration_agent import ValueIterationAgent
+from agents.base_agent import BaseAgent, Transition
+from agents.random_agent import RandomAgent
 
-
-__all__ = ["BaseAgent", "ValueIterationAgent"]
+__all__ = ["BaseAgent", "Transition", "RandomAgent"]

@@ -194,11 +194,13 @@ class ContinuousEnvironment:
 
         self.world_stats["cumulative_reward"] += reward
 
+        reached_target = self.terminal and not collision
+
         return (
             self._make_state(),
             reward,
             self.terminal,
-            {"collision": collision, "action": action,
+            {"success": bool(reached_target), "collision": collision, "action": action,
              "pos": self.pos.copy(), "theta": self.theta},
         )
 
