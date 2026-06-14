@@ -9,6 +9,7 @@ from world.grid_codes import (
     TARGET_CELL,
 )
 from world.continuous_environment import ContinuousEnvironment, N_ACTIONS
+from world.minimal_environment import MinimalEnvironment
 
 GRID_CONFIGS_FP = Path(__file__).parents[1].resolve() / Path("grid_configs")
 GRID_CONFIGS_FP.mkdir(parents=True, exist_ok=True)
