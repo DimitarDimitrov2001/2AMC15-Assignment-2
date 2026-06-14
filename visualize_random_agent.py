@@ -25,15 +25,15 @@ CELL_COLORS = {
 }
 
 
-def run_episode(env, max_steps: int):
+def run_episode(env, max_steps: int, num_actions: int):
     """Run one episode with a random agent, return continuous path and stats."""
-    agent  = RandomAgent()
+    agent  = RandomAgent(num_actions=num_actions)
     state  = env.reset()
     initial_grid = np.copy(env.grid)
     path   = [env.pos.copy()]
 
     for _ in range(max_steps):
-        action = agent.take_action(state)
+        action = agent.select_action(state)
         state, _, done, _ = env.step(action)
         path.append(env.pos.copy())
         if done:
@@ -84,7 +84,7 @@ def main():
 
     # ---- MinimalEnvironment: (x, y), 4 actions -------------------------
     env1 = MinimalEnvironment(args.grid, step_size=args.step_size, random_seed=args.seed)
-    path1, stats1, grid1 = run_episode(env1, args.max_steps)
+    path1, stats1, grid1 = run_episode(env1, args.max_steps, 4)
 
     print("=== MinimalEnvironment (x, y) ===")
     print(f"  state_dim={env1.state_dim}  n_actions={env1.n_actions}")
@@ -93,8 +93,10 @@ def main():
     # ---- ContinuousEnvironment: (x, y, theta, sensors), 3 actions ------
     env2 = ContinuousEnvironment(args.grid, step_size=args.step_size,
                                  rotation_step=args.rotation_step,
-                                 random_seed=args.seed)
-    path2, stats2, grid2 = run_episode(env2, args.max_steps)
+                                 random_seed=args.seed,
+                                 action_sigma=0.1,
+                                 sensory_sigma=0.1)
+    path2, stats2, grid2 = run_episode(env2, args.max_steps, 3)
 
     print("\n=== ContinuousEnvironment (x, y, theta, d0..d7) ===")
     print(f"  state_dim={env2.state_dim}  n_actions={env2.n_actions}")
