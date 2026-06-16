@@ -1,60 +1,77 @@
 from __future__ import annotations
 
 from pathlib import Path
+import collections
 import torch
 from torch import nn
 
 import numpy as np
 
-from agents import BaseAgent, Transition, ReplayBuffer, Batch
-from agents.epsilon_schedules import EpsilonSchedule, ConstantEpsilon, _DEFAULT_EPSILON
+from agents.base_agent import BaseAgent, Transition
+from agents.replay_buffer import ReplayBuffer, Batch
+from agents.epsilon_schedules import EpsilonSchedule, ConstantEpsilon
+from agents.defaults import (
+    DQN_N_HIDDEN_NODES,
+    DQN_DEFAULT_BATCH_SIZE,
+    DQN_DEFAULT_LEARNING_RATE,
+    DQN_DEFAULT_GAMMA,
+    DQN_DEFAULT_NO_OBS_IN_STATE,
+    DQN_DEFAULT_UPDATE_FREQ,
+    DQN_DEFAULT_TARGET_UPDATE_FREQ,
+    DQN_DEFAULT_CHECKPOINT_PATH,
+)
 from world import BaseGridEnvironment
 
-_N_HIDDEN_NODES = 64
-_DEFAULT_BATCH_SIZE = 32
-_DEFAULT_LEARNING_RATE = 2.5e-4
-_DEFAULT_GAMMA = 0.99
-_DEFAULT_TARGET_UPDATE_FREQ = 1000
-_DEFAULT_CHECKPOINT_PATH = "models/dqn/best_model.pt"
-
 class DQNAgent(BaseAgent):
+    """Based on Mnih et al (https://www.nature.com/articles/nature14236) method, but different architecture."""
     _rng: np.random.Generator
-    n_actions: np.ndarray
+    n_actions: int
     state_dim: int
+    _single_obs_dim: int
     replay_buffer: ReplayBuffer
     batch_size: int
     _learning_rate: float
     _update_network: nn.Sequential
     _target_network: nn.Sequential
     _checkpoint_path: str
+    _no_obs_in_state: int
+    _update_freq: int
     _target_update_freq: int
     _learn_steps: int
+    _total_steps: int
     _device: torch.device
     _obs_scale: np.ndarray
+    _obs_buffer: collections.deque[np.ndarray]
 
     def __init__(
         self,
         env: BaseGridEnvironment,
         seed: int,
-        gamma: float = _DEFAULT_GAMMA,
-        learning_rate: float = _DEFAULT_LEARNING_RATE,
+        gamma: float = DQN_DEFAULT_GAMMA,
+        learning_rate: float = DQN_DEFAULT_LEARNING_RATE,
         replay_buffer: ReplayBuffer | None = None,
-        batch_size: int = _DEFAULT_BATCH_SIZE,
+        batch_size: int = DQN_DEFAULT_BATCH_SIZE,
         replay_buffer_capacity: int | None = None,
         epsilon_scheduler: EpsilonSchedule | None = None,
-        target_update_freq: int = _DEFAULT_TARGET_UPDATE_FREQ,
-        checkpoint_path: str = _DEFAULT_CHECKPOINT_PATH,
+        no_obs_in_state: int = DQN_DEFAULT_NO_OBS_IN_STATE,
+        update_freq: int = DQN_DEFAULT_UPDATE_FREQ,
+        target_update_freq: int = DQN_DEFAULT_TARGET_UPDATE_FREQ,
+        checkpoint_path: str = DQN_DEFAULT_CHECKPOINT_PATH,
         device: str = "cpu",
     ):
         self.env = env
         self.n_actions = env.n_actions
-        self.state_dim = env.state_dim
+        self._single_obs_dim = env.state_dim
+        self._no_obs_in_state = no_obs_in_state
+        self.state_dim = self._single_obs_dim * self._no_obs_in_state
         self.gamma = gamma
         self._learning_rate = learning_rate
         self._device = torch.device(device)
         obs_high = np.asarray(env.observation_high, dtype=np.float32)
         obs_high = np.where(obs_high == 0.0, 1.0, obs_high)
-        self._obs_scale = (1.0 / obs_high).astype(np.float32)
+        # Tile the observation scale to match the stacked state dimension
+        single_obs_scale = (1.0 / obs_high).astype(np.float32)
+        self._obs_scale = np.tile(single_obs_scale, self._no_obs_in_state)
         self._update_network = self._build_q_network().to(self._device)
         self._target_network = self._build_q_network().to(self._device)
         self._target_network.load_state_dict(self._update_network.state_dict())
@@ -63,17 +80,20 @@ class DQNAgent(BaseAgent):
         self.batch_size = batch_size
         self._rng = np.random.default_rng(seed)
         self._checkpoint_path = checkpoint_path
+        self._update_freq = update_freq
         self._target_update_freq = target_update_freq
         self._learn_steps = 0
+        self._total_steps = 0
+        self._obs_buffer = collections.deque(maxlen=self._no_obs_in_state)
         self.epsilon_scheduler = epsilon_scheduler if epsilon_scheduler is not None else ConstantEpsilon()
 
     def _build_q_network(self) -> nn.Sequential:
         return nn.Sequential(
-            nn.Linear(self.state_dim, _N_HIDDEN_NODES),
+            nn.Linear(self.state_dim, DQN_N_HIDDEN_NODES),
             nn.ReLU(),
-            nn.Linear(_N_HIDDEN_NODES, _N_HIDDEN_NODES),
+            nn.Linear(DQN_N_HIDDEN_NODES, DQN_N_HIDDEN_NODES),
             nn.ReLU(),
-            nn.Linear(_N_HIDDEN_NODES, self.n_actions),
+            nn.Linear(DQN_N_HIDDEN_NODES, self.n_actions),
         )
 
     def _preprocess(self, state: np.ndarray) -> np.ndarray:
@@ -84,23 +104,42 @@ class DQNAgent(BaseAgent):
         """
         return np.asarray(state, dtype=np.float32) * self._obs_scale
 
+    def _get_phi(self) -> np.ndarray:
+        """Get the current stacked state (phi) from the observation buffer."""
+        return np.concatenate(list(self._obs_buffer), axis=-1)
+
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
         """Pick an action greedily from the online net, exploring while training."""
-        if training and self._rng.random() < self.epsilon_scheduler.epsilon(state):
+        if len(self._obs_buffer) == 0:
+            for _ in range(self._no_obs_in_state):
+                self._obs_buffer.append(state)
+        elif not training:
+            # During evaluation, observe() is not called, so we update the buffer here
+            self._obs_buffer.append(state)
+
+        phi_state = self._get_phi()
+        if training and self._rng.random() < self.epsilon_scheduler.epsilon(phi_state):
             return int(self._rng.integers(self.n_actions))
+
         with torch.no_grad():
-            phi = torch.as_tensor(self._preprocess(state), dtype=torch.float32, device=self._device)
+            phi = torch.as_tensor(self._preprocess(phi_state), dtype=torch.float32, device=self._device)
             q_values = self._update_network(phi)
         return int(q_values.argmax().item())
 
     def observe(self, transition: Transition) -> None:
+        phi_t = self._get_phi()
+        self._obs_buffer.append(transition.next_state)
+        phi_tp1 = self._get_phi()
+
         self.replay_buffer.add(
-            state=self._preprocess(transition.state),
+            state=self._preprocess(phi_t),
             action=transition.action,
             reward=transition.reward,
-            next_state=self._preprocess(transition.next_state),
+            next_state=self._preprocess(phi_tp1),
             done=transition.terminated,
         )
+        self._total_steps += 1
+        self.epsilon_scheduler.step()
         return None
 
     def update(self) -> dict[str, float]:
@@ -110,6 +149,8 @@ class DQNAgent(BaseAgent):
         dict of scalars (loss, Q/target statistics, gradient norm, learning
         rate, buffer fill) that the Trainer averages per episode and logs.
         """
+        if self._total_steps % self._update_freq != 0:
+            return {}
         if not self.replay_buffer.can_sample(self.batch_size):
             return {}
         batch: Batch = self.replay_buffer.sample(self.batch_size)
@@ -161,11 +202,11 @@ class DQNAgent(BaseAgent):
 
 
     def on_episode_start(self, episode: int) -> None:
-        
+        self._obs_buffer.clear()
         return None
 
     def on_episode_end(self, episode: int, episode_metrics: dict[str, float]) -> dict[str, float]:
-        # Advance the epsilon schedule once per episode; nothing else does this.
+        # Advance the epsilon schedule once per episode (if it uses per-episode logic).
         self.epsilon_scheduler.on_episode_end()
         return {"epsilon": float(self.epsilon_scheduler.epsilon(None))}
 

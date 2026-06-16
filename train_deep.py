@@ -24,8 +24,30 @@ import torch
 from agents import RandomAgent
 from agents.base_agent import BaseAgent
 from agents.dqn_agent import DQNAgent
-from agents.epsilon_schedules import ConstantEpsilon, _DEFAULT_EPSILON
+from agents.epsilon_schedules import ConstantEpsilon, LinearEpsilonAnnealing
+from agents.defaults import (
+    EPSILON_DEFAULT,
+    EPSILON_DEFAULT_MIN,
+    EPSILON_ANNEAL_DURATION,
+    EPSILON_ANNEAL_START_STEP,
+    DQN_DEFAULT_GAMMA,
+    DQN_DEFAULT_LEARNING_RATE,
+    DQN_DEFAULT_BATCH_SIZE,
+    REPLAY_DEFAULT_CAPACITY,
+    DQN_DEFAULT_NO_OBS_IN_STATE,
+    DQN_DEFAULT_UPDATE_FREQ,
+    DQN_DEFAULT_TARGET_UPDATE_FREQ,
+)
 from training import Trainer, TrainerConfig
+from training.defaults import (
+    DEFAULT_TOTAL_EPISODES,
+    DEFAULT_MAX_STEPS_PER_EPISODE,
+    DEFAULT_SEED,
+    DEFAULT_EVAL_INTERVAL,
+    DEFAULT_EVAL_EPISODES,
+    DEFAULT_LOG_INTERVAL,
+    DEFAULT_VIZ_MAX_STEPS,
+)
 from world import GRID_CONFIGS_FP, ContinuousEnvironment, MinimalEnvironment
 from visualize_random_agent import visualize_agent
 
@@ -72,24 +94,36 @@ def _resolve_device(choice: str) -> str:
     return "cpu"
 
 
-def _build_agent(name: str, env: EnvType, seed: int, device: str, epsilon: float) -> BaseAgent:
+def _build_agent(args: Namespace, env: EnvType, device: str) -> BaseAgent:
     """Construct the requested agent.
 
     A registry keyed by ``--agent`` so learning agents drop in later without
     changing the training flow.
     """
     builders = {
-        "random": lambda: RandomAgent(num_actions=env.n_actions, seed=seed),
+        "random": lambda: RandomAgent(num_actions=env.n_actions, seed=args.seed),
         "dqn": lambda: DQNAgent(
             env=env,
-            seed=seed,
+            seed=args.seed,
             device=device,
-            epsilon_scheduler=ConstantEpsilon(epsilon),
+            gamma=args.gamma,
+            learning_rate=args.lr,
+            batch_size=args.batch_size,
+            replay_buffer_capacity=args.replay_capacity,
+            no_obs_in_state=args.stack_size,
+            update_freq=args.update_freq,
+            target_update_freq=args.target_update_freq,
+            epsilon_scheduler=LinearEpsilonAnnealing(
+                duration=args.epsilon_duration,
+                start_step=args.epsilon_start_step,
+                epsilon_max=args.epsilon,
+                epsilon_min=args.epsilon_min,
+            ) if args.epsilon_duration > 0 else ConstantEpsilon(args.epsilon),
         ),
     }
-    if name not in builders:
-        raise ValueError(f"Unknown agent: {name}")
-    return builders[name]()
+    if args.agent not in builders:
+        raise ValueError(f"Unknown agent: {args.agent}")
+    return builders[args.agent]()
 
 
 def parse_args() -> Namespace:
@@ -111,20 +145,37 @@ def parse_args() -> Namespace:
                         help="Use random start positions during training (exploring starts) "
                              "while evaluation keeps the fixed --start-pos.")
 
-    parser.add_argument("--episodes", type=int, default=20_000, help="Training episodes.")
-    parser.add_argument("--max-steps", type=int, default=200, dest="max_steps",
+    parser.add_argument("--episodes", type=int, default=DEFAULT_TOTAL_EPISODES, help="Training episodes.")
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS_PER_EPISODE, dest="max_steps",
                         help="Max steps per episode.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed.")
-    parser.add_argument("--eval-interval", type=int, default=10, dest="eval_interval",
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
+    parser.add_argument("--eval-interval", type=int, default=DEFAULT_EVAL_INTERVAL, dest="eval_interval",
                         help="Evaluate every N episodes.")
-    parser.add_argument("--eval-episodes", type=int, default=5, dest="eval_episodes",
+    parser.add_argument("--eval-episodes", type=int, default=DEFAULT_EVAL_EPISODES, dest="eval_episodes",
                         help="Episodes per evaluation.")
-    parser.add_argument("--log-interval", type=int, default=1, dest="log_interval",
+    parser.add_argument("--log-interval", type=int, default=DEFAULT_LOG_INTERVAL, dest="log_interval",
                         help="Print/log metrics (and rollout image) every N episodes.")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto",
                         help="Compute device; 'auto' picks cuda > mps > cpu.")
-    parser.add_argument("--epsilon", type=float, default=_DEFAULT_EPSILON,
-                        help="Fixed epsilon-greedy exploration rate for DQN (default 0.1).")
+    parser.add_argument("--epsilon", type=float, default=EPSILON_DEFAULT,
+                        help="Start epsilon for annealing (or fixed rate if duration=0).")
+    parser.add_argument("--epsilon-min", type=float, default=EPSILON_DEFAULT_MIN, dest="epsilon_min",
+                        help="Minimum epsilon after annealing.")
+    parser.add_argument("--epsilon-duration", type=int, default=EPSILON_ANNEAL_DURATION, dest="epsilon_duration",
+                        help="Number of steps to anneal epsilon over.")
+    parser.add_argument("--epsilon-start-step", type=int, default=EPSILON_ANNEAL_START_STEP, dest="epsilon_start_step",
+                        help="Steps before epsilon annealing starts.")
+    parser.add_argument("--gamma", type=float, default=DQN_DEFAULT_GAMMA, help="Discount factor.")
+    parser.add_argument("--lr", type=float, default=DQN_DEFAULT_LEARNING_RATE, help="Learning rate.")
+    parser.add_argument("--batch-size", type=int, default=DQN_DEFAULT_BATCH_SIZE, dest="batch_size", help="Batch size.")
+    parser.add_argument("--replay-capacity", type=int, default=REPLAY_DEFAULT_CAPACITY, dest="replay_capacity",
+                        help="Replay buffer capacity.")
+    parser.add_argument("--stack-size", type=int, default=DQN_DEFAULT_NO_OBS_IN_STATE, dest="stack_size",
+                        help="Number of observations to stack for state.")
+    parser.add_argument("--update-freq", type=int, default=DQN_DEFAULT_UPDATE_FREQ, dest="update_freq",
+                        help="Update online network every N steps.")
+    parser.add_argument("--target-update-freq", type=int, default=DQN_DEFAULT_TARGET_UPDATE_FREQ, dest="target_update_freq",
+                        help="Update target network every N steps.")
 
     parser.add_argument("--out-dir", type=Path, default=None, dest="out_dir",
                         help="Output dir for checkpoints and history JSON.")
@@ -136,7 +187,7 @@ def parse_args() -> Namespace:
                         help="Save a post-training rollout path image.")
     parser.add_argument("--viz-out", type=Path, default=None, dest="viz_out",
                         help="Visualization output path (defaults under --out-dir or CWD).")
-    parser.add_argument("--viz-max-steps", type=int, default=500, dest="viz_max_steps",
+    parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
                         help="Max steps for the visualization rollout.")
     return parser.parse_args()
 
@@ -145,6 +196,9 @@ def _build_config(args: Namespace) -> TrainerConfig:
     """Materialise a TrainerConfig from parsed CLI args."""
     checkpoint_dir = str(args.out_dir) if args.out_dir is not None else None
     history_path = str(args.out_dir / "history.json") if args.out_dir is not None else None
+
+    # Convert Path objects to strings for W&B logging
+    full_config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
 
     return TrainerConfig(
         total_episodes=args.episodes,
@@ -160,6 +214,7 @@ def _build_config(args: Namespace) -> TrainerConfig:
         use_wandb=args.wandb,
         wandb_group=args.wandb_group,
         run_name=f"{args.agent}_{args.env}",
+        full_config=full_config,
     )
 
 
@@ -175,7 +230,7 @@ def main() -> None:
 
     env = _build_env(args.env, args.grid, args.seed, train_start)
     eval_env = _build_env(args.env, args.grid, args.seed, eval_start)
-    agent = _build_agent(args.agent, env, args.seed, device, args.epsilon)
+    agent = _build_agent(args, env, device)
     config = _build_config(args)
 
     print(f"[{args.agent} | {args.env}] grid={args.grid.name} "

@@ -372,11 +372,17 @@ class Trainer:
         import wandb
 
         self._wandb = wandb
+        
+        # Use full_config if provided, otherwise fallback to asdict(self.config)
+        config_to_log = asdict(self.config)
+        if self.config.full_config is not None:
+            config_to_log = self.config.full_config
+
         self._wandb.init(
             project=self.config.wandb_project,
             group=self.config.wandb_group,
             name=self.config.run_name,
-            config=asdict(self.config),
+            config=config_to_log,
         )
 
     # Finish W&B run (if started)
