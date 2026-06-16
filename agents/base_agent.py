@@ -44,3 +44,11 @@ class BaseAgent(ABC):
     def on_episode_end(self, episode: int, episode_metrics: dict[str, float]) -> dict[str, float]:
         # Option to do something at the end of each episode
         return {}
+
+    def save_checkpoint(self, path: str) -> None:
+        # Persist agent state (e.g. network weights). No-op for stateless agents.
+        return None
+
+    def load_checkpoint(self, path: str) -> None:
+        # Restore agent state from a checkpoint. No-op for stateless agents.
+        return None

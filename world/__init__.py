@@ -8,6 +8,7 @@ from world.grid_codes import (
     START_CELL,
     TARGET_CELL,
 )
+from world.environment_base import BaseGridEnvironment
 from world.continuous_environment import ContinuousEnvironment, N_ACTIONS
 from world.minimal_environment import MinimalEnvironment
 
@@ -16,6 +17,7 @@ GRID_CONFIGS_FP.mkdir(parents=True, exist_ok=True)
 
 __all__ = [
     "BOUNDARY_WALL_CELL",
+    "BaseGridEnvironment",
     "ContinuousEnvironment",
     "EMPTY_CELL",
     "GRID_CONFIGS_FP",
