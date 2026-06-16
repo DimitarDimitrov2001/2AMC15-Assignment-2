@@ -25,21 +25,59 @@ CELL_COLORS = {
 }
 
 
-def run_episode(env, max_steps: int, num_actions: int):
-    """Run one episode with a random agent, return continuous path and stats."""
-    agent  = RandomAgent(num_actions=num_actions)
+def run_episode(env, agent, max_steps: int):
+    """Run one episode with the given agent, return continuous path and stats."""
     state  = env.reset()
     initial_grid = np.copy(env.grid)
     path   = [env.pos.copy()]
 
     for _ in range(max_steps):
-        action = agent.select_action(state)
+        action = agent.select_action(state, training=False)
         state, _, done, _ = env.step(action)
         path.append(env.pos.copy())
         if done:
             break
 
     return np.array(path), env.world_stats.copy(), initial_grid
+
+
+def build_rollout_figure(env, agent, max_steps: int, title: str,
+                         color: str = "royalblue") -> plt.Figure:
+    """Run one rollout with ``agent`` on ``env`` and return a single-axis path figure.
+
+    The caller is responsible for saving and/or closing the returned figure.
+    """
+    path, stats, initial_grid = run_episode(env, agent, max_steps)
+
+    fig, ax = plt.subplots(figsize=(7, 7))
+    plot_env(ax, path, stats, initial_grid, title, color)
+
+    legend_patches = [
+        mpatches.Patch(color=CELL_COLORS[1], label="Wall"),
+        mpatches.Patch(color=CELL_COLORS[2], label="Obstacle"),
+        mpatches.Patch(color=CELL_COLORS[3], label="Target"),
+    ]
+    fig.legend(handles=legend_patches, loc="lower center",
+               ncol=3, fontsize=9, bbox_to_anchor=(0.5, -0.02))
+
+    fig.tight_layout()
+    return fig
+
+
+def visualize_agent(env, agent, max_steps: int, out: Path, title: str,
+                    color: str = "royalblue"):
+    """Run one rollout with ``agent`` on ``env`` and save a single-axis path plot.
+
+    Reuses :func:`build_rollout_figure` so the same rendering serves both this
+    script and the deep-RL training CLI.
+
+    Returns:
+        Path the figure was written to.
+    """
+    fig = build_rollout_figure(env, agent, max_steps, title, color)
+    fig.savefig(out, dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    return out
 
 
 def draw_grid(ax, grid: np.ndarray):
@@ -84,7 +122,8 @@ def main():
 
     # ---- MinimalEnvironment: (x, y), 4 actions -------------------------
     env1 = MinimalEnvironment(args.grid, step_size=args.step_size, random_seed=args.seed)
-    path1, stats1, grid1 = run_episode(env1, args.max_steps, 4)
+    agent1 = RandomAgent(num_actions=env1.n_actions, seed=args.seed)
+    path1, stats1, grid1 = run_episode(env1, agent1, args.max_steps)
 
     print("=== MinimalEnvironment (x, y) ===")
     print(f"  state_dim={env1.state_dim}  n_actions={env1.n_actions}")
@@ -96,7 +135,8 @@ def main():
                                  random_seed=args.seed,
                                  action_sigma=0.1,
                                  sensory_sigma=0.1)
-    path2, stats2, grid2 = run_episode(env2, args.max_steps, 3)
+    agent2 = RandomAgent(num_actions=env2.n_actions, seed=args.seed)
+    path2, stats2, grid2 = run_episode(env2, agent2, args.max_steps)
 
     print("\n=== ContinuousEnvironment (x, y, theta, d0..d7) ===")
     print(f"  state_dim={env2.state_dim}  n_actions={env2.n_actions}")

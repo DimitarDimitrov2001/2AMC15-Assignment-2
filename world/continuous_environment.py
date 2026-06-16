@@ -22,21 +22,18 @@ Action encoding
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import random
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-from world.grid import Grid
-from world.grid_codes import (
-    BOUNDARY_WALL_CELL,
-    EMPTY_CELL,
-    OBSTACLE_CELL,
-    START_CELL,
-    TARGET_CELL,
+from world.environment_base import (
+    LIVING_PENALTY,
+    BaseGridEnvironment,
+    RewardFn,
+    cell_index,
 )
-
+from world.grid_codes import EMPTY_CELL, TARGET_CELL
 
 N_ACTIONS: int = 3          # rotate_left, rotate_right, move_forward
 
@@ -57,12 +54,8 @@ DEFAULT_SENSOR_ANGLES: np.ndarray = np.arange(0, 360, 45)
 DEFAULT_RAY_STEP: float           = 0.1
 DEFAULT_RANDOM_SEED: int        = 0
 
-# Reward values
-_GOAL_REWARD: float       =  1.0
-_LIVING_PENALTY: float    = -0.01
-_COLLISION_PENALTY: float = -1.0
 
-class ContinuousEnvironment:
+class ContinuousEnvironment(BaseGridEnvironment):
     """Continuous grid-world with rotate-then-move actions and distance sensors.
 
     State vector returned by reset() and step():
@@ -72,6 +65,12 @@ class ContinuousEnvironment:
     theta is in degrees [0, 360).
     d0..dN are distances to the nearest wall in the configured directions.
     """
+
+    # Heading angle in degrees, updated on rotate/move actions.
+    theta: float
+
+    # NumPy RNG for Gaussian action/sensor noise (separate from the base RNG).
+    _np_rng: np.random.Generator
 
     def __init__(
         self,
@@ -85,9 +84,9 @@ class ContinuousEnvironment:
         initial_heading: float = DEFAULT_INITIAL_HEADING,
         sensor_angles: np.ndarray = DEFAULT_SENSOR_ANGLES,
         ray_step: float = DEFAULT_RAY_STEP,
-        reward_fn: callable | None = None,
+        reward_fn: RewardFn | None = None,
         random_seed: int = DEFAULT_RANDOM_SEED,
-    ):
+    ) -> None:
         """
         Args:
             grid_fp:          Path to a .npy grid file.
@@ -96,7 +95,8 @@ class ContinuousEnvironment:
             max_sensor_range: Maximum distance each ray can travel. If no wall
                               is found within this range the sensor returns
                               max_sensor_range (meaning "clear ahead").
-            sigma:            Probability of a random action replacing the chosen one.
+            action_sigma:     Std-dev of Gaussian noise added to actions.
+            sensory_sigma:    Std-dev of Gaussian noise added to sensor readings.
             agent_start_pos:  Optional fixed (x, y) start position.
             initial_heading:  Starting heading angle in degrees.
             sensor_angles:    Angles at which distance sensors are pointed.
@@ -105,61 +105,28 @@ class ContinuousEnvironment:
                                 fn(grid, pos, new_pos, collision) -> float
             random_seed:      Seed for the internal RNG.
         """
-        if not Path(grid_fp).exists():
-            raise FileNotFoundError(f"Grid file not found: {grid_fp}")
-
-        self.grid_fp         = Path(grid_fp)
-        self.step_size       = step_size
-        self.rotation_step   = rotation_step
+        super().__init__(
+            grid_fp,
+            step_size=step_size,
+            agent_start_pos=agent_start_pos,
+            reward_fn=reward_fn,
+            random_seed=random_seed,
+        )
+        self.rotation_step = rotation_step
         self.max_sensor_range = max_sensor_range
-        self.action_sigma    = action_sigma
-        self.sensory_sigma   = sensory_sigma
-        self.agent_start_pos = agent_start_pos
+        self.action_sigma = action_sigma
+        self.sensory_sigma = sensory_sigma
         self.initial_heading = initial_heading
-        self.sensor_angles   = sensor_angles
-        self.ray_step        = ray_step
-        self.reward_fn       = reward_fn if reward_fn is not None else _default_reward
-        self._rng            = random.Random(random_seed)
-        self._np_rng         = np.random.default_rng(random_seed)
-
-        # Populated on reset()
-        self.grid:     np.ndarray | None = None
-        self.pos:      np.ndarray | None = None   # [x, y]
-        self.theta:    float             = initial_heading
-        self.terminal: bool              = False
-        self.world_stats: dict           = {}
+        self.sensor_angles = sensor_angles
+        self.ray_step = ray_step
+        self.theta = initial_heading
+        self._np_rng = np.random.default_rng(random_seed)
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
-    def reset(self) -> np.ndarray:
-        """Reload the grid and place the agent.
-
-        Returns:
-            Initial state [x, y, theta, d0..dN] as np.ndarray.
-        """
-        self.grid     = Grid.load_grid(self.grid_fp).cells
-        self.terminal = False
-        self.theta    = self.initial_heading
-        self.world_stats = {
-            "cumulative_reward":  0.0,
-            "total_steps":        0,
-            "total_collisions":   0,
-            "total_agent_moves":  0,
-            "total_rotations":    0,
-            "targets_reached":    0,
-        }
-
-        self.pos = (
-            np.array(self.agent_start_pos, dtype=float)
-            if self.agent_start_pos is not None
-            else self._find_start()
-        )
-
-        return self._make_state()
-
-    def step(self, action: int) -> tuple[np.ndarray, float, bool, dict]:
+    def step(self, action: int) -> tuple[np.ndarray, float, bool, dict[str, Any]]:
         """Apply one action and return the new state.
 
         Args:
@@ -171,26 +138,26 @@ class ContinuousEnvironment:
             terminated: True when all targets collected
             info:       dict with keys success, collision, action, pos, theta
         """
-        assert self.grid is not None, "Call reset() before step()."
+        assert self.grid is not None and self.pos is not None, "Call reset() before step()."
 
         self.world_stats["total_steps"] += 1
 
         collision = False
         action_noise = self._np_rng.normal(0, self.action_sigma) if self.action_sigma > 0 else 0
 
-        if action == ROTATE_LEFT:                                      # rotate left
+        if action == ROTATE_LEFT:                                       # rotate left
             self.theta = (self.theta - self.rotation_step + action_noise) % 360.0
             self.world_stats["total_rotations"] += 1
-            reward = _LIVING_PENALTY
+            reward = LIVING_PENALTY
 
         elif action == ROTATE_RIGHT:                                    # rotate right
             self.theta = (self.theta + self.rotation_step + action_noise) % 360.0
             self.world_stats["total_rotations"] += 1
-            reward = _LIVING_PENALTY
+            reward = LIVING_PENALTY
 
-        elif action == MOVE_FORWARD:                                                # move forward
+        elif action == MOVE_FORWARD:                                    # move forward
             noisy_step = self.step_size + action_noise
-            
+
             collision, new_pos = self._move_forward(noisy_step)
 
             reward = self.reward_fn(self.grid, self.pos, new_pos, collision)
@@ -202,7 +169,7 @@ class ContinuousEnvironment:
                 self.world_stats["total_agent_moves"] += 1
 
                 # Check for goal
-                i, j = _cell(self.pos)
+                i, j = cell_index(self.pos)
                 if self.grid[i, j] == TARGET_CELL:
                     self.grid[i, j] = EMPTY_CELL
                     self.world_stats["targets_reached"] += 1
@@ -223,10 +190,6 @@ class ContinuousEnvironment:
              "pos": self.pos.copy(), "theta": self.theta},
         )
 
-    # ------------------------------------------------------------------
-    # Properties for building the DQN
-    # ------------------------------------------------------------------
-
     @property
     def state_dim(self) -> int:
         """x, y, theta + sensor readings."""
@@ -236,10 +199,24 @@ class ContinuousEnvironment:
     def n_actions(self) -> int:
         return N_ACTIONS
 
-    @property
-    def grid_shape(self) -> tuple[int, int]:
-        assert self.grid is not None, "Call reset() first."
-        return tuple(self.grid.shape)
+    # ------------------------------------------------------------------
+    # Reset hooks
+    # ------------------------------------------------------------------
+
+    def _reseed(self, seed: int) -> None:
+        """Reseed both the base RNG and the NumPy noise generator."""
+        super()._reseed(seed)
+        self._np_rng = np.random.default_rng(seed)
+
+    def _init_world_stats(self) -> dict[str, float]:
+        """Extend the common counters with rotation tracking."""
+        stats = super()._init_world_stats()
+        stats["total_rotations"] = 0
+        return stats
+
+    def _on_reset(self) -> None:
+        """Reset the heading to the configured initial value."""
+        self.theta = self.initial_heading
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -247,18 +224,21 @@ class ContinuousEnvironment:
 
     def _make_state(self) -> np.ndarray:
         """Build the full state vector [x, y, theta, d0..dN]."""
+        assert self.pos is not None, "Call reset() first."
         sensors = self._cast_rays()
         state = np.concatenate([self.pos, [self.theta], sensors]).astype(np.float32)
-        
+
         if self.sensory_sigma > 0:
             noise = self._np_rng.normal(0, self.sensory_sigma, size=state.shape)
             state = state + noise
             n_sensors = len(self.sensor_angles)
             state[-n_sensors:] = np.clip(state[-n_sensors:], 0, self.max_sensor_range)
-            
+
         return state.astype(np.float32)
 
-    def _dda_raycast(self, start_pos: np.ndarray, dx: float, dy: float, max_dist: float) -> tuple[bool, float, np.ndarray]:
+    def _dda_raycast(
+        self, start_pos: np.ndarray, dx: float, dy: float, max_dist: float
+    ) -> tuple[bool, float, np.ndarray]:
         """
         Implementation of the Amanatides & Woo Fast Voxel Traversal algorithm.
         Returns: (hit_wall: bool, exact_distance: float, exact_hit_position: np.ndarray)
@@ -277,7 +257,7 @@ class ContinuousEnvironment:
             t_max_x = (x - current_x) * t_delta_x
         else:
             t_max_x = float('inf')
-            
+
         if dy > 0:
             t_max_y = (current_y + 1.0 - y) * t_delta_y
         elif dy < 0:
@@ -285,7 +265,7 @@ class ContinuousEnvironment:
         else:
             t_max_y = float('inf')
 
-        if self._is_collision_cell(current_x, current_y):
+        if self._is_obstacle_cell(current_x, current_y):
             return True, 0.0, start_pos
 
         dist = 0.0
@@ -303,77 +283,39 @@ class ContinuousEnvironment:
                 final_pos = start_pos + np.array([dx, dy]) * max_dist
                 return False, max_dist, final_pos
 
-            if self._is_collision_cell(current_x, current_y):
+            if self._is_obstacle_cell(current_x, current_y):
                 exact_hit_pos = start_pos + np.array([dx, dy]) * dist
                 return True, dist, exact_hit_pos
-            
-    def _is_collision_cell(self, i: int, j: int) -> bool:
-        """True if the grid cell (i, j) is out of bounds or an obstacle."""
-        dim_i, dim_j = self.grid.shape
-        if i < 0 or j < 0 or i >= dim_i or j >= dim_j:
-            return True
-        return int(self.grid[i, j]) in (BOUNDARY_WALL_CELL, OBSTACLE_CELL)
 
     def _cast_rays(self) -> np.ndarray:
         """Cast rays and return exact hit distances using Amanatides & Woo DDA."""
+        assert self.pos is not None, "Call reset() first."
         distances = np.full(len(self.sensor_angles), self.max_sensor_range, dtype=float)
 
         for i, angle_deg in enumerate(self.sensor_angles):
             world_angle = (self.theta + angle_deg) % 360.0
             rad = np.deg2rad(world_angle)
             dx, dy = np.cos(rad), np.sin(rad)
-            
+
             is_hit, dist, _ = self._dda_raycast(self.pos, dx, dy, self.max_sensor_range)
             if is_hit:
                 distances[i] = dist
 
         return distances
 
-    def _find_start(self) -> np.ndarray:
-        """Return the continuous centre of the START_CELL or a random empty cell."""
-        starts = np.argwhere(self.grid == START_CELL)
-        if len(starts):
-            i, j = starts[0]
-            self.grid[i, j] = EMPTY_CELL
-            return np.array([i + 0.5, j + 0.5], dtype=float)
-
-        empty = np.argwhere(self.grid == EMPTY_CELL)
-        i, j  = empty[self._rng.randrange(len(empty))]
-        return np.array([i + 0.5, j + 0.5], dtype=float)
-    
     def _move_forward(self, step_size: float) -> tuple[bool, np.ndarray]:
-        """Calculates the exact next position using Continuous Collision Detection (CCD)."""
+        """Calculate the exact next position using Continuous Collision Detection (CCD)."""
+        assert self.pos is not None, "Call reset() first."
         rad = np.deg2rad(self.theta)
         dx, dy = np.cos(rad), np.sin(rad)
-        
+
         is_hit, dist, target_pos = self._dda_raycast(self.pos, dx, dy, step_size)
-        
+
         if is_hit:
-            # Stop slightly short of the wall boundary to avoid numeric rounding putting us inside the wall
+            # Stop slightly short of the wall boundary to avoid numeric rounding
+            # putting us inside the wall.
             epsilon = 1e-4
             safe_dist = max(0.0, dist - epsilon)
             safe_pos = self.pos + np.array([dx, dy]) * safe_dist
             return True, safe_pos
-        else:
-            return False, target_pos
-
-# ------------------------------------------------------------------
-# Module-level helpers
-# ------------------------------------------------------------------
-
-def _cell(pos: np.ndarray) -> tuple[int, int]:
-    return int(np.floor(pos[0])), int(np.floor(pos[1]))
-
-
-def _default_reward(
-    grid: np.ndarray,
-    pos: np.ndarray,
-    new_pos: np.ndarray,
-    collision: bool,
-) -> float:
-    if collision:
-        return _COLLISION_PENALTY
-    i, j = _cell(new_pos)
-    if grid[i, j] == TARGET_CELL:
-        return _GOAL_REWARD
-    return _LIVING_PENALTY
+        return False, target_pos

@@ -140,6 +140,43 @@ uv run python train.py mc --help
 uv run python train.py q_learning --help
 ```
 
+## Deep-RL Training With `train_deep.py`
+
+`train_deep.py` is a separate entry point for the Assignment-2 deep-RL stack: the continuous/minimal environments and the algorithm-agnostic `Trainer` in `training/`. It is independent of the tabular `train.py` above.
+
+The random baseline and a DQN agent are wired today. Further learning agents (PPO, ...) plug in through the `_build_agent` factory without changing the training loop.
+
+General form:
+
+```powershell
+uv run python train_deep.py --env {minimal|continuous} [options]
+```
+
+Example:
+
+```powershell
+uv run python train_deep.py --env minimal --agent dqn --episodes 5000 --max-steps 200 --visualize
+```
+
+Options:
+
+- `--env {minimal,continuous}`: environment to train on (default `minimal`).
+- `--agent {random,dqn}`: agent to train (default `random`).
+- `--grid`: path to a `.npy` grid file (default `grid_configs/small_grid.npy`).
+- `--start-pos X Y`: fixed continuous (x, y) start for evaluation and visualization (and for training unless `--exploring-starts` is set). Omit to use the grid's START_CELL, falling back to a random empty cell each episode (note: `small_grid.npy` has no START_CELL, so without this flag the start is randomized per episode).
+- `--exploring-starts`: use random start positions during training (exploring starts) while evaluation/visualization keep the fixed `--start-pos`. Helps discovery on sparse-reward grids by seeding the replay buffer with goal-reaching transitions from varied starts.
+- `--episodes`, `--max-steps`, `--seed`: training budget and seed (default `20000` episodes, `200` max steps per episode).
+- `--device {auto,cpu,cuda,mps}`: compute device for learning agents (default `auto`, which picks cuda > mps > cpu). For the small grid MLP, `cpu` is often fastest.
+- `--epsilon`: fixed epsilon-greedy exploration rate for DQN (default `0.1`). Eval always uses greedy action selection regardless of this value.
+- `--log-interval`: print metrics (and log a rollout image when `--visualize`) every N episodes (default `1`).
+- DQN-style agents use a replay buffer with default capacity `1_000_000` transitions (`agents.replay_buffer.DEFAULT_CAPACITY`), sized for the default episode budget.
+- `--eval-interval`, `--eval-episodes`: evaluation cadence and rollouts per evaluation.
+- `--out-dir`: when set, writes `best.pt`/`last.pt` checkpoints and `history.json` there.
+- `--wandb`, `--wandb-group`: enable Weights & Biases logging and optionally bucket runs under a group name.
+- `--visualize`, `--viz-out`, `--viz-max-steps`: save a post-training rollout path image (reuses `visualize_random_agent.py`). When combined with `--wandb`, a greedy rollout is also rendered every `--log-interval` episodes and logged to the W&B `viz/rollout` panel (frames saved under `<out-dir>/rollouts/`).
+
+The `Trainer` (`training/trainer.py`) is algorithm-agnostic and supports an optional environment-step budget (`max_env_steps`), per-episode mean of agent update metrics, best/last checkpointing via `BaseAgent.save_checkpoint`/`load_checkpoint`, and history-to-disk. Both new environments accept an optional per-episode `seed` in `reset(seed=...)`.
+
 ## Reproducing Report Results With `run_experiments.py`
 
 Use `run_experiments.py` to reproduce the structured experiment suite used for the report. It runs:
@@ -267,7 +304,10 @@ Single `train.py` runs write artifacts to `--out_dir`, including:
 |-- grid_configs/                  # Saved NumPy grid files
 |-- report_results/                # Existing generated report outputs
 |-- utils/                         # Evaluation, plotting, logging, artifacts
-|-- world/                         # Grid-world environment, GUI, rewards, grid tools
+|-- world/                         # Grid-world environments, GUI, grid tools
+|   |-- environment_base.py        # BaseGridEnvironment: shared episode scaffolding
+|   |-- minimal_environment.py     # Point-mass (x, y) environment
+|   `-- continuous_environment.py  # Robot with heading + distance sensors
 |-- train.py                       # Single-run CLI
 |-- run_experiments.py             # Report experiment CLI
 |-- pyproject.toml                 # Project dependencies and Python requirement
@@ -283,12 +323,13 @@ The environment is a grid world with encoded cells:
 - `2`: obstacle
 - `3`: target
 
-The reward function is defined in `world/rewards.py`:
+The default reward function is defined in `world/environment_base.py` (`default_reward`):
 
-- empty cell, boundary wall, obstacle: `-1`
-- target: `+10`
+- target reached: `+1.0`
+- collision with boundary wall or obstacle: `-1.0`
+- otherwise (living penalty): `-0.01`
 
-Wall and obstacle bumps keep the robot in place and receive the same step penalty.
+A custom `reward_fn` can be passed to either environment to override these defaults. Wall and obstacle bumps keep the robot in place and receive the collision penalty.
 
 ## Grids
 

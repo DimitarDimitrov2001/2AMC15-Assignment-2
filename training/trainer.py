@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import asdict
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 
 from agents.base_agent import BaseAgent, Transition
 from training.config import TrainerConfig
+from world import BaseGridEnvironment
 
 
 class Trainer:
@@ -29,24 +32,31 @@ class Trainer:
     # Create the trainer
     def __init__(
         self,
-        env: Any, 
+        env: BaseGridEnvironment,
         agent: BaseAgent,
         config: TrainerConfig, # Includes all the settings from the config
-        eval_env: Any | None = None, # Separate evaluation environment? (Optional)
+        eval_env: BaseGridEnvironment | None = None, # Separate evaluation environment? (Optional)
+        # Optional hook: render a greedy rollout for ``agent`` at ``episode`` and
+        # return the saved image path. Logged to W&B at the logging cadence.
+        viz_fn: Callable[[BaseAgent, int], str] | None = None,
     ) -> None:
         self.env = env
         # Use separate evaluation environment, otherwise use same environment for training and evaluation by default
         self.eval_env = eval_env if eval_env is not None else env
         self.agent = agent
         self.config = config
+        self._viz_fn = viz_fn
 
         # Counts all steps across all episodes
         self.global_step = 0
         # Store all episode metrics as a dictionary
         self.history: list[dict[str, float]] = []
 
+        # Best value seen so far for config.best_metric (used for checkpointing)
+        self._best_metric_value: float | None = None
+
         # Stores the W&B module (if enabled)
-        self._wandb = None
+        self._wandb: Any = None
 
     def train(self) -> list[dict[str, float]]:
         """
@@ -82,8 +92,13 @@ class Trainer:
             terminated = False
             truncated = False
 
-            # Store metrics from the last agent.update() call
-            last_update_metrics: dict[str, float] = {}
+            # Accumulate agent.update() metrics across the whole episode so the
+            # logged value is a per-episode mean instead of only the last step.
+            update_sums: dict[str, float] = {}
+            update_counts: dict[str, int] = {}
+
+            # Set when the env-step budget is reached mid-episode.
+            stop_training = False
 
             # Run one episode
             for _step in range(self.config.max_steps_per_episode):
@@ -110,7 +125,10 @@ class Trainer:
                 # Agent sees the transition
                 self.agent.observe(transition)
                 # Agent does a learning update
-                last_update_metrics = self.agent.update()
+                update_metrics = self.agent.update()
+                for key, value in update_metrics.items():
+                    update_sums[key] = update_sums.get(key, 0.0) + float(value)
+                    update_counts[key] = update_counts.get(key, 0) + 1
 
                 # Episode counters
                 episode_reward += float(reward)
@@ -121,7 +139,7 @@ class Trainer:
                 state = next_state
 
                 # Stop episode if environment says so (terminated = reach goal, truncated = max episode length reached)
-                if terminated or truncated:
+                if terminated or truncated or stop_training:
                     break
 
             # Collect episode metrics
@@ -134,9 +152,9 @@ class Trainer:
                 "global_step": float(self.global_step),
             }
 
-            # Add metrics from agent.update()
-            for key, value in last_update_metrics.items():
-                episode_metrics[f"update/{key}"] = float(value)
+            # Add per-episode mean of the agent.update() metrics
+            for key, total in update_sums.items():
+                episode_metrics[f"update/{key}"] = total / update_counts[key]
 
             # Option to do something at the end of each episode
             end_metrics = self.agent.on_episode_end(episode, episode_metrics)
@@ -149,17 +167,71 @@ class Trainer:
             if episode % self.config.eval_interval == 0:
                 eval_metrics = self.evaluate()
                 episode_metrics.update(eval_metrics)
+                # Checkpoint the best policy seen so far (if enabled)
+                self._maybe_save_best(eval_metrics)
 
             # Print metrics and pass to W&B
             if episode % self.config.log_interval == 0:
                 self._log(episode_metrics, episode)
+                self._maybe_log_rollout(episode)
 
             # Save to memory
             self.history.append(episode_metrics)
 
+            # Honor the optional env-step budget
+            if stop_training:
+                break
+
+        # Persist the final agent state and history (if enabled)
+        self._maybe_save_last()
+        if self.config.history_path is not None:
+            self.save_history(self.config.history_path)
+
         # Close W&B if used
         self._finish_wandb()
         return self.history
+
+    def _maybe_log_rollout(self, episode: int) -> None:
+        """Render a greedy rollout and log it to W&B as an image (no-op if disabled).
+
+        The image path is logged directly to W&B and intentionally kept out of
+        ``episode_metrics`` (which is JSON-serialised by ``save_history``).
+        """
+        if self._wandb is None or self._viz_fn is None:
+            return
+        image_path = self._viz_fn(self.agent, episode)
+        self._wandb.log({"viz/rollout": self._wandb.Image(image_path)}, step=self.global_step)
+
+    def save_history(self, path: str) -> None:
+        """Write the per-episode metric history to ``path`` as JSON."""
+        out_path = Path(path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8") as handle:
+            json.dump(self.history, handle, indent=2)
+
+    def _maybe_save_best(self, eval_metrics: dict[str, float]) -> None:
+        """Save a 'best' checkpoint when config.best_metric improves."""
+        if not self.config.save_best or self.config.checkpoint_dir is None:
+            return
+
+        value = eval_metrics.get(self.config.best_metric)
+        if value is None:
+            return
+
+        if self._best_metric_value is None or value > self._best_metric_value:
+            self._best_metric_value = value
+            path = Path(self.config.checkpoint_dir) / "best.pt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.agent.save_checkpoint(str(path))
+
+    def _maybe_save_last(self) -> None:
+        """Save a 'last' checkpoint at the end of training when enabled."""
+        if not self.config.save_last or self.config.checkpoint_dir is None:
+            return
+
+        path = Path(self.config.checkpoint_dir) / "last.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.agent.save_checkpoint(str(path))
 
     def evaluate(self) -> dict[str, float]:
         """
