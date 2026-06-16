@@ -12,8 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from agents.base_agent import Transition
-
-_DEFAULT_CAPACITY: int = 10_000
+from agents.defaults import REPLAY_DEFAULT_CAPACITY, REPLAY_DEFAULT_START_SIZE
 
 @dataclass(frozen=True)
 class Batch:
@@ -36,6 +35,7 @@ class ReplayBuffer:
 
     # Private fields declared with types up front.
     _capacity: int
+    _replay_start_size: int
     _obs_dim: int
     _rng: np.random.Generator
     _states: np.ndarray
@@ -50,6 +50,7 @@ class ReplayBuffer:
         self,
         obs_dim: int,
         capacity: int | None = None,
+        replay_start_size: int | None = None,
         seed: int | None = None,
     ) -> None:
         """Create an empty buffer.
@@ -62,8 +63,9 @@ class ReplayBuffer:
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
 
-        capacity = capacity if capacity is not None else _DEFAULT_CAPACITY
+        capacity = capacity if capacity is not None else REPLAY_DEFAULT_CAPACITY
         self._capacity = capacity
+        self._replay_start_size = replay_start_size if replay_start_size else REPLAY_DEFAULT_START_SIZE
         if capacity <= 0:
             raise ValueError("capacity must be positive")
         self._obs_dim = obs_dim
@@ -136,8 +138,11 @@ class ReplayBuffer:
         )
 
     def can_sample(self, batch_size: int) -> bool:
-        """True if the buffer holds at least ``batch_size`` transitions."""
-        return self._size >= batch_size
+        """True if the buffer holds at least ``replay_start_size`` transitions or batch size if batch size > replay start size."""
+        if batch_size > self._replay_start_size:
+            return self._size >= batch_size
+        else:
+            return self._size >= self._replay_start_size
 
     @property
     def capacity(self) -> int:
