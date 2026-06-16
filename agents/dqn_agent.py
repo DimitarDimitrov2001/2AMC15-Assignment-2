@@ -8,6 +8,7 @@ from torch import nn
 import numpy as np
 
 from agents.base_agent import BaseAgent, Transition
+from agents.curiosity import GridCountMotivation, IntrinsicMotivation
 from agents.replay_buffer import ReplayBuffer, Batch
 from agents.epsilon_schedules import EpsilonSchedule, ConstantEpsilon
 from agents.defaults import (
@@ -42,6 +43,7 @@ class DQNAgent(BaseAgent):
     _device: torch.device
     _obs_scale: np.ndarray
     _obs_buffer: collections.deque[np.ndarray]
+    intrinsic_motivation: IntrinsicMotivation
 
     def __init__(
         self,
@@ -53,6 +55,7 @@ class DQNAgent(BaseAgent):
         batch_size: int = DQN_DEFAULT_BATCH_SIZE,
         replay_buffer_capacity: int | None = None,
         epsilon_scheduler: EpsilonSchedule | None = None,
+        intrinsic_motivation: IntrinsicMotivation | None = None,
         no_obs_in_state: int = DQN_DEFAULT_NO_OBS_IN_STATE,
         update_freq: int = DQN_DEFAULT_UPDATE_FREQ,
         target_update_freq: int = DQN_DEFAULT_TARGET_UPDATE_FREQ,
@@ -86,6 +89,7 @@ class DQNAgent(BaseAgent):
         self._total_steps = 0
         self._obs_buffer = collections.deque(maxlen=self._no_obs_in_state)
         self.epsilon_scheduler = epsilon_scheduler if epsilon_scheduler is not None else ConstantEpsilon()
+        self.intrinsic_motivation = intrinsic_motivation if intrinsic_motivation is not None else GridCountMotivation(obs_high[0], obs_high[1], env.step_size)
 
     def _build_q_network(self) -> nn.Sequential:
         return nn.Sequential(
@@ -130,11 +134,12 @@ class DQNAgent(BaseAgent):
         phi_t = self._get_phi()
         self._obs_buffer.append(transition.next_state)
         phi_tp1 = self._get_phi()
+        reward = transition.reward + self.intrinsic_motivation.get_bonus_and_update(transition.next_state)
 
         self.replay_buffer.add(
             state=self._preprocess(phi_t),
             action=transition.action,
-            reward=transition.reward,
+            reward=reward,
             next_state=self._preprocess(phi_tp1),
             done=transition.terminated,
         )

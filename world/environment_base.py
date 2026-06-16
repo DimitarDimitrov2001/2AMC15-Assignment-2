@@ -36,8 +36,8 @@ RewardFn = Callable[[np.ndarray, np.ndarray, np.ndarray, bool], float]
 
 # Default reward values (shared pre-assignment spec).
 GOAL_REWARD: float = 1.0
-LIVING_PENALTY: float = -0.01
-COLLISION_PENALTY: float = -0.05
+LIVING_PENALTY: float = -0.1
+COLLISION_PENALTY: float = -0.15
 
 
 def cell_index(pos: np.ndarray) -> tuple[int, int]:
