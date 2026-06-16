@@ -241,6 +241,7 @@ venv.bak/
 
 # wandb
 wandb
+runs
 
 # pr-ready skill marker
 .pr-ready.json

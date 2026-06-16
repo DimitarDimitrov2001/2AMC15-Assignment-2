@@ -17,6 +17,8 @@ from pathlib import Path
 # Force a headless backend before pyplot is imported (via visualize_random_agent),
 # so periodic in-training rendering never tries to open a GUI window.
 import matplotlib
+
+from agents.curiosity import GridCountMotivation, NoMotivation
 matplotlib.use("Agg")
 
 import torch
@@ -26,6 +28,7 @@ from agents.base_agent import BaseAgent
 from agents.dqn_agent import DQNAgent
 from agents.epsilon_schedules import ConstantEpsilon, LinearEpsilonAnnealing
 from agents.defaults import (
+    BETA_DEFAULT,
     EPSILON_DEFAULT,
     EPSILON_DEFAULT_MIN,
     EPSILON_ANNEAL_DURATION,
@@ -63,21 +66,13 @@ def _build_env(name: str, grid: Path, seed: int,
     if name == "minimal":
         return MinimalEnvironment(
             grid_fp=grid,
-            step_size=0.5,
-            sigma=0.0,
             agent_start_pos=start_pos,
             random_seed=seed,
         )
     if name == "continuous":
         return ContinuousEnvironment(
             grid_fp=grid,
-            step_size=0.5,
-            rotation_step=30.0,
-            max_sensor_range=3.0,
-            action_sigma=0.0,
-            sensory_sigma=0.0,
             agent_start_pos=start_pos,
-            initial_heading=0.0,
             random_seed=seed,
         )
     raise ValueError(f"Unknown environment: {name}")
@@ -119,6 +114,12 @@ def _build_agent(args: Namespace, env: EnvType, device: str) -> BaseAgent:
                 epsilon_max=args.epsilon,
                 epsilon_min=args.epsilon_min,
             ) if args.epsilon_duration > 0 else ConstantEpsilon(args.epsilon),
+            intrinsic_motivation=GridCountMotivation(
+                max_x=env.observation_high[0],
+                max_y=env.observation_high[1],
+                step_size=env.step_size,
+                beta=BETA_DEFAULT
+            ) if args.curiosity == "grid_count" else NoMotivation()
         ),
     }
     if args.agent not in builders:
@@ -189,6 +190,10 @@ def parse_args() -> Namespace:
                         help="Visualization output path (defaults under --out-dir or CWD).")
     parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
                         help="Max steps for the visualization rollout.")
+    parser.add_argument("--curiosity", type=str, default="no", dest="curiosity",
+                        help="What intrinsic motivation to use, currently supported: no, grid_count.")
+    parser.add_argument("--curiosity-beta", type=float, default=0.5, dest="curiosity_beta",
+                        help="Beta value for the curiosity term.")
     return parser.parse_args()
 
 

@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from world.defaults import DEFAULT_MINIMAL_ENVIRONMENT_SIGMA, DEFAULT_MINIMAL_ENVIRONMENT_STEP_SIZE
 from world.environment_base import BaseGridEnvironment, RewardFn, cell_index
 from world.grid_codes import EMPTY_CELL, TARGET_CELL
 
@@ -54,8 +55,8 @@ class MinimalEnvironment(BaseGridEnvironment):
     def __init__(
         self,
         grid_fp: Path,
-        step_size: float = 0.5,
-        sigma: float = 0.0,
+        step_size: float = DEFAULT_MINIMAL_ENVIRONMENT_STEP_SIZE,
+        sigma: float = DEFAULT_MINIMAL_ENVIRONMENT_SIGMA,
         agent_start_pos: tuple[float, float] | None = None,
         reward_fn: RewardFn | None = None,
         random_seed: int = 0,
