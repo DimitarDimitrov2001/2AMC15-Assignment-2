@@ -3,7 +3,7 @@ import math
 import numpy as np
 from typing import Tuple, Union
 
-from agents.defaults import BETA_DEFAULT
+from agents.defaults import BETA_DEFAULT, CURIOSITY_RESOLUTION_DEFAULT
 
 class IntrinsicMotivation(abc.ABC):
     """
@@ -67,21 +67,22 @@ class GridCountMotivation(IntrinsicMotivation):
     Highly optimized exploration module for bounded grid environments.
     Uses contiguous NumPy memory for O(1) lookups and avoids Python C-API overhead.
     """
-    def __init__(self, max_x: float, max_y: float, step_size: float, beta: float = BETA_DEFAULT):
+    def __init__(self, max_x: float, max_y: float, resolution: float = CURIOSITY_RESOLUTION_DEFAULT, beta: float = BETA_DEFAULT):
         super().__init__(beta)
-        self.step_size = step_size
-        
+        # Counting bucket size in world units.
+        self.resolution = resolution
+
         # Calculate the integer dimensions of the grid (+1 for inclusive bounds)
-        self.shape_x = int((max_x / step_size)) + 1
-        self.shape_y = int((max_y / step_size)) + 1
+        self.shape_x = int((max_x / resolution)) + 1
+        self.shape_y = int((max_y / resolution)) + 1
         
         # Pre-allocate memory using NumPy for maximum speed
         self.visit_counts = np.zeros((self.shape_x, self.shape_y), dtype=np.int32)
 
     def _get_indices(self, state: Union[np.ndarray, Tuple[float, float]]) -> Tuple[int, int]:
         """Helper to safely discretize continuous states into grid indices."""
-        idx_x = int(state[0] / self.step_size)
-        idx_y = int(state[1] / self.step_size)
+        idx_x = int(state[0] / self.resolution)
+        idx_y = int(state[1] / self.resolution)
         
         # Ensure we don't crash if the agent steps slightly out of bounds
         idx_x = max(0, min(idx_x, self.shape_x - 1))
