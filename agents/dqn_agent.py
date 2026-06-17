@@ -44,6 +44,8 @@ class DQNAgent(BaseAgent):
     _obs_scale: np.ndarray
     _obs_buffer: collections.deque[np.ndarray]
     intrinsic_motivation: IntrinsicMotivation
+    # Per-episode intrinsic-bonus accounting (extrinsic return is tracked by the Trainer).
+    _episode_intrinsic_reward: float
 
     def __init__(
         self,
@@ -89,16 +91,24 @@ class DQNAgent(BaseAgent):
         self._total_steps = 0
         self._obs_buffer = collections.deque(maxlen=self._no_obs_in_state)
         self.epsilon_scheduler = epsilon_scheduler if epsilon_scheduler is not None else ConstantEpsilon()
-        self.intrinsic_motivation = intrinsic_motivation if intrinsic_motivation is not None else GridCountMotivation(obs_high[0], obs_high[1], env.step_size)
+        self.intrinsic_motivation = intrinsic_motivation if intrinsic_motivation is not None else GridCountMotivation(obs_high[0], obs_high[1])
+        self._episode_intrinsic_reward = 0.0
 
     def _build_q_network(self) -> nn.Sequential:
-        return nn.Sequential(
+        net = nn.Sequential(
             nn.Linear(self.state_dim, DQN_N_HIDDEN_NODES),
             nn.ReLU(),
             nn.Linear(DQN_N_HIDDEN_NODES, DQN_N_HIDDEN_NODES),
             nn.ReLU(),
             nn.Linear(DQN_N_HIDDEN_NODES, self.n_actions),
         )
+        # Output layer has no activation, so Kaiming-calibrated weights inflate
+        # initial Q magnitudes. Small-gain orthogonal weights + zero bias keep
+        # all actions equally unbiased before the first gradient step.
+        output_layer: nn.Linear = net[-1]  # type: ignore[assignment]
+        nn.init.orthogonal_(output_layer.weight, gain=0.01)
+        nn.init.zeros_(output_layer.bias)
+        return net
 
     def _preprocess(self, state: np.ndarray) -> np.ndarray:
         """Map a raw (optionally batched) state to the normalized observation phi.
@@ -134,7 +144,9 @@ class DQNAgent(BaseAgent):
         phi_t = self._get_phi()
         self._obs_buffer.append(transition.next_state)
         phi_tp1 = self._get_phi()
-        reward = transition.reward + self.intrinsic_motivation.get_bonus_and_update(transition.next_state)
+        bonus = self.intrinsic_motivation.get_bonus_and_update(transition.next_state)
+        reward = transition.reward + bonus
+        self._episode_intrinsic_reward += bonus
 
         self.replay_buffer.add(
             state=self._preprocess(phi_t),
@@ -151,8 +163,10 @@ class DQNAgent(BaseAgent):
         """Run one DQN gradient step and return training diagnostics.
 
         Returns an empty dict until the buffer holds a full batch; otherwise a
-        dict of scalars (loss, Q/target statistics, gradient norm, learning
-        rate, buffer fill) that the Trainer averages per episode and logs.
+        dict of per-step scalars (loss, Q estimates, TD error, gradient norm)
+        under W&B group prefixes that the Trainer averages per episode. Only
+        quantities whose per-episode mean is meaningful live here; point-in-time
+        values (epsilon, buffer fill) are reported from ``on_episode_end``.
         """
         if self._total_steps % self._update_freq != 0:
             return {}
@@ -189,16 +203,11 @@ class DQNAgent(BaseAgent):
             self._sync_target_network()
 
         return {
-            "loss": float(loss.item()),
-            "q_value_mean": float(q_pred.mean().item()),
-            "state_value_mean": float(q_all.max(dim=1).values.mean().item()),
-            "target_mean": float(targets.mean().item()),
-            "td_error_abs": float((targets - q_pred).abs().mean().item()),
-            "grad_norm": float(grad_norm),
-            "learning_rate": float(self._optimizer.param_groups[0]["lr"]),
-            "buffer_size": float(len(self.replay_buffer)),
-            "learn_steps": float(self._learn_steps),
-            "epsilon": float(self.epsilon_scheduler.epsilon(None)),
+            "losses/td_loss": float(loss.item()),
+            "losses/td_error_abs": float((targets - q_pred).abs().mean().item()),
+            "losses/grad_norm": float(grad_norm),
+            "qvals/q_taken": float(q_pred.mean().item()),
+            "qvals/q_max": float(q_all.max(dim=1).values.mean().item()),
         }
 
     def _sync_target_network(self) -> None:
@@ -208,12 +217,18 @@ class DQNAgent(BaseAgent):
 
     def on_episode_start(self, episode: int) -> None:
         self._obs_buffer.clear()
+        self._episode_intrinsic_reward = 0.0
         return None
 
     def on_episode_end(self, episode: int, episode_metrics: dict[str, float]) -> dict[str, float]:
         # Advance the epsilon schedule once per episode (if it uses per-episode logic).
         self.epsilon_scheduler.on_episode_end()
-        return {"epsilon": float(self.epsilon_scheduler.epsilon(None))}
+        # Point-in-time values reported once per episode
+        return {
+            "charts/epsilon": float(self.epsilon_scheduler.epsilon(None)),
+            "charts/buffer_size": float(len(self.replay_buffer)),
+            "rollout/intrinsic_reward": float(self._episode_intrinsic_reward),
+        }
 
     def save_checkpoint(self, path: str) -> None:
         """Persist the online/target networks and optimizer state to ``path``.

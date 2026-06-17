@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
@@ -76,6 +77,13 @@ class Trainer:
         # W&B only if its enabled in the config
         self._setup_wandb()
 
+        # Agents that own their training loop (e.g. A3C) drive their own
+        # environments; the Trainer only consumes their per-episode reports.
+        if getattr(self.agent, "trains_externally", False):
+            return self._train_external()
+
+        start_time = time.perf_counter()
+
         # Loop over training episodes (First episode is 1)
         for episode in range(1, self.config.total_episodes + 1):
             # Option to do something at the start of each episode
@@ -144,24 +152,21 @@ class Trainer:
 
             # Collect episode metrics
             episode_metrics: dict[str, float] = {
-                "train/episode": float(episode),
-                "train/episode_reward": float(episode_reward),
-                "train/episode_length": float(episode_length),
-                "train/terminated": float(terminated),
-                "train/truncated": float(truncated),
+                "episode": float(episode),
                 "global_step": float(self.global_step),
+                "rollout/episode_reward": float(episode_reward),
+                "rollout/episode_length": float(episode_length),
+                "rollout/success": float(terminated),
+                "charts/SPS": float(self.global_step / max(time.perf_counter() - start_time, 1e-9)),
             }
 
-            # Add per-episode mean of the agent.update() metrics
+            # Per-episode mean of the agent.update() metrics
             for key, total in update_sums.items():
-                episode_metrics[f"update/{key}"] = total / update_counts[key]
+                episode_metrics[key] = total / update_counts[key]
 
-            # Option to do something at the end of each episode
             end_metrics = self.agent.on_episode_end(episode, episode_metrics)
-
-            # Add metrics from on_episode_end()
             for key, value in end_metrics.items():
-                episode_metrics[f"episode_end/{key}"] = float(value)
+                episode_metrics[key] = float(value)
 
             # Evaluate the current policy (Separate from training)
             if episode % self.config.eval_interval == 0:
@@ -170,13 +175,12 @@ class Trainer:
                 # Checkpoint the best policy seen so far (if enabled)
                 self._maybe_save_best(eval_metrics)
 
+            self.history.append(episode_metrics)
+
             # Print metrics and pass to W&B
             if episode % self.config.log_interval == 0:
                 self._log(episode_metrics, episode)
                 self._maybe_log_rollout(episode)
-
-            # Save to memory
-            self.history.append(episode_metrics)
 
             # Honor the optional env-step budget
             if stop_training:
@@ -191,6 +195,45 @@ class Trainer:
         self._finish_wandb()
         return self.history
 
+    def _train_external(self) -> list[dict[str, float]]:
+        """Consume episode reports from a self-training agent (e.g. A3C).
+
+        The agent's ``train_iter`` generator owns the parallel environment
+        rollouts and yields one metrics dict per finished episode. The Trainer
+        retains ownership of evaluation, logging, checkpointing and W&B, all run
+        on the agent's shared global network on the main process.
+        """
+        start_time = time.perf_counter()
+
+        for episode, report in enumerate(self.agent.train_iter(), start=1):
+            self.global_step = int(report.get("global_step", self.global_step))
+
+            episode_metrics: dict[str, float] = dict(report)
+            episode_metrics["episode"] = float(episode)
+            episode_metrics["global_step"] = float(self.global_step)
+            episode_metrics["charts/SPS"] = float(
+                self.global_step / max(time.perf_counter() - start_time, 1e-9)
+            )
+
+            # Evaluate the shared global policy on a cadence (no learning here).
+            if episode % self.config.eval_interval == 0:
+                eval_metrics = self.evaluate()
+                episode_metrics.update(eval_metrics)
+                self._maybe_save_best(eval_metrics)
+
+            self.history.append(episode_metrics)
+
+            if episode % self.config.log_interval == 0:
+                self._log(episode_metrics, episode)
+                self._maybe_log_rollout(episode)
+
+        self._maybe_save_last()
+        if self.config.history_path is not None:
+            self.save_history(self.config.history_path)
+
+        self._finish_wandb()
+        return self.history
+
     def _maybe_log_rollout(self, episode: int) -> None:
         """Render a greedy rollout and log it to W&B as an image (no-op if disabled).
 
@@ -200,7 +243,8 @@ class Trainer:
         if self._wandb is None or self._viz_fn is None:
             return
         image_path = self._viz_fn(self.agent, episode)
-        self._wandb.log({"viz/rollout": self._wandb.Image(image_path)}, step=self.global_step)
+        image = self._wandb.Image(image_path, caption=f"episode {episode}")
+        self._wandb.log({"viz/rollout": image}, step=self.global_step)
 
     def save_history(self, path: str) -> None:
         """Write the per-episode metric history to ``path`` as JSON."""
@@ -245,6 +289,8 @@ class Trainer:
 
         # Run evaluation episodes (can be multiple so randomness plays less of a role)
         for eval_episode in range(self.config.eval_episodes):
+            self.agent.on_episode_start(eval_episode)
+
             # Use different seed than for training
             state = self._reset_env(
                 self.eval_env,
@@ -340,24 +386,46 @@ class Trainer:
         )
 
     def _log(self, metrics: dict[str, float], episode: int) -> None:
-        """
-        Print metrics to terminal (and W&B)
-        """
+        """Print window-averaged stats to the terminal and raw metrics to W&B.
 
-        # Use 0.0 if not found
-        reward = metrics.get("train/episode_reward", 0.0)
-        length = metrics.get("train/episode_length", 0.0)
+        Terminal values are means over the last ``log_interval`` episodes to
+        smooth per-episode noise (``term_rate`` is the goal-reach fraction);
+        W&B still receives the raw current-episode metrics for its own charts.
+        """
+        # Window = the episodes since the previous log (current one included).
+        window = self.history[-self.config.log_interval:]
+
+        reward = self._window_mean(window, "rollout/episode_reward")
+        length = self._window_mean(window, "rollout/episode_length")
+        term_rate = self._window_mean(window, "rollout/success")
+        # Fall back to the policy loss for agents without a TD loss (e.g. A3C).
+        loss = self._window_mean(window, "losses/td_loss")
+        if not np.isfinite(loss):
+            loss = self._window_mean(window, "losses/policy_loss")
+        q_value = self._window_mean(window, "qvals/q_taken")
+        # Epsilon is a schedule value, not a noisy sample, so report the latest.
+        epsilon = metrics.get("charts/epsilon", float("nan"))
 
         print(
             f"Episode {episode:5d} | "
             f"reward={reward:8.3f} | "
-            f"length={length:5.0f} | "
+            f"len={length:5.1f} | "
+            f"term_rate={term_rate:4.2f} | "
+            f"loss={loss:8.4f} | "
+            f"q={q_value:7.3f} | "
+            f"eps={epsilon:4.2f} | "
             f"steps={self.global_step:7d}"
         )
 
         # Send to W&B if enabled
         if self._wandb is not None:
             self._wandb.log(metrics, step=self.global_step)
+
+    @staticmethod
+    def _window_mean(window: list[dict[str, float]], key: str) -> float:
+        """Mean of ``key`` over window episodes where it is present and finite."""
+        values = [m[key] for m in window if key in m and np.isfinite(m[key])]
+        return float(np.mean(values)) if values else float("nan")
 
     def _setup_wandb(self) -> None:
         """
@@ -378,11 +446,16 @@ class Trainer:
         if self.config.full_config is not None:
             config_to_log = self.config.full_config
 
+        # start_method="thread" runs the W&B backend in-process instead of a
+        # separate spawned service. On macOS the spawned-service transport
+        # frequently deadlocks during wandb.finish() (network flush hangs),
+        # which does not happen on Linux/Windows; threads avoid that stall.
         self._wandb.init(
             project=self.config.wandb_project,
             group=self.config.wandb_group,
             name=self.config.run_name,
             config=config_to_log,
+            settings=self._wandb.Settings(start_method="thread"),
         )
 
     # Finish W&B run (if started)

@@ -7,10 +7,12 @@ Addition 1 — Realistic action & state space
     Actions:  rotate_left, rotate_right, move_forward
     State:    (x, y, theta)  where theta is the heading angle in degrees
 
-Addition 2 — 8-direction distance sensors
+Addition 2 — 8-direction distance sensors (optional, on by default)
     State:    (x, y, theta, d0, d1, d2, d3, d4, d5, d6, d7)
     d0..d7 are distances to the nearest wall/obstacle in 8 directions
     (0=East, 45=NE, 90=North, 135=NW, 180=West, 225=SW, 270=South, 315=SE)
+    Disable via ``use_sensors=False`` to fall back to the bare (x, y, theta)
+    state.
 
 Action encoding
 ---------------
@@ -44,7 +46,7 @@ ROTATE_RIGHT: Action    = 1
 MOVE_FORWARD: Action    = 2
 
 # Default environment parameters
-DEFAULT_STEP_SIZE: float        = 0.5
+DEFAULT_STEP_SIZE: float        = 0.1
 DEFAULT_ROTATION_STEP: float    = 30.0
 DEFAULT_MAX_SENSOR_RANGE: float = 3.0
 DEFAULT_ACTION_SIGMA: float     = 0.0
@@ -59,8 +61,9 @@ class ContinuousEnvironment(BaseGridEnvironment):
     """Continuous grid-world with rotate-then-move actions and distance sensors.
 
     State vector returned by reset() and step():
-        [x, y, theta, d0, d1, ..., dN]
-        shape (3 + n_sensors,), all floats
+        [x, y, theta, d0, d1, ..., dN]  when ``use_sensors`` is True
+        [x, y, theta]                   when ``use_sensors`` is False
+        shape (3 + n_sensors,) or (3,), all floats
 
     theta is in degrees [0, 360).
     d0..dN are distances to the nearest wall in the configured directions.
@@ -68,6 +71,10 @@ class ContinuousEnvironment(BaseGridEnvironment):
 
     # Heading angle in degrees, updated on rotate/move actions.
     theta: float
+
+    # When False the 8-direction distance sensors are dropped from the
+    # observation, leaving the bare (x, y, theta) kinematic state.
+    use_sensors: bool
 
     # NumPy RNG for Gaussian action/sensor noise (separate from the base RNG).
     _np_rng: np.random.Generator
@@ -84,6 +91,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         initial_heading: float = DEFAULT_INITIAL_HEADING,
         sensor_angles: np.ndarray = DEFAULT_SENSOR_ANGLES,
         ray_step: float = DEFAULT_RAY_STEP,
+        use_sensors: bool = True,
         reward_fn: RewardFn | None = None,
         random_seed: int = DEFAULT_RANDOM_SEED,
     ) -> None:
@@ -101,6 +109,9 @@ class ContinuousEnvironment(BaseGridEnvironment):
             initial_heading:  Starting heading angle in degrees.
             sensor_angles:    Angles at which distance sensors are pointed.
             ray_step:         Distance increment when checking for collisions along a ray.
+            use_sensors:      If True (default) append the distance-sensor
+                              readings to the observation; if False the state is
+                              just (x, y, theta) and no rays are cast.
             reward_fn:        Custom reward function with signature
                                 fn(grid, pos, new_pos, collision) -> float
             random_seed:      Seed for the internal RNG.
@@ -119,6 +130,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         self.initial_heading = initial_heading
         self.sensor_angles = sensor_angles
         self.ray_step = ray_step
+        self.use_sensors = use_sensors
         self.theta = initial_heading
         self._np_rng = np.random.default_rng(random_seed)
 
@@ -192,12 +204,28 @@ class ContinuousEnvironment(BaseGridEnvironment):
 
     @property
     def state_dim(self) -> int:
-        """x, y, theta + sensor readings."""
-        return 2 + 1 + len(self.sensor_angles)
+        """x, y, theta (+ sensor readings when ``use_sensors`` is True)."""
+        n_sensors = len(self.sensor_angles) if self.use_sensors else 0
+        return 2 + 1 + n_sensors
 
     @property
     def n_actions(self) -> int:
         return N_ACTIONS
+
+    @property
+    def observation_high(self) -> np.ndarray:
+        """Per-dimension upper bound for normalizing [x, y, theta(, d0..dN)].
+
+        x, y are bounded by the grid (rows, cols); theta by 360 degrees; each
+        sensor by ``max_sensor_range``. Lets agents scale every input to
+        roughly [0, 1] instead of leaving theta (~360) and distances (~range)
+        unscaled next to the small x, y values.
+        """
+        dim_i, dim_j = self._grid_dims()
+        bounds = [float(dim_i), float(dim_j), 360.0]
+        if self.use_sensors:
+            bounds.extend([float(self.max_sensor_range)] * len(self.sensor_angles))
+        return np.array(bounds, dtype=np.float32)
 
     # ------------------------------------------------------------------
     # Reset hooks
@@ -223,8 +251,11 @@ class ContinuousEnvironment(BaseGridEnvironment):
     # ------------------------------------------------------------------
 
     def _make_state(self) -> np.ndarray:
-        """Build the full state vector [x, y, theta, d0..dN]."""
+        """Build the state vector [x, y, theta] (+ [d0..dN] when sensors are on)."""
         assert self.pos is not None, "Call reset() first."
+        if not self.use_sensors:
+            return np.concatenate([self.pos, [self.theta]]).astype(np.float32)
+
         sensors = self._cast_rays()
         state = np.concatenate([self.pos, [self.theta], sensors]).astype(np.float32)
 
