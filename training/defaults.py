@@ -1,8 +1,8 @@
 """Default configurations for the trainer and training loop."""
 
 # Training loop defaults
-DEFAULT_TOTAL_EPISODES: int = 5_000
-DEFAULT_MAX_STEPS_PER_EPISODE: int = 200
+DEFAULT_TOTAL_EPISODES: int = 3_000
+DEFAULT_MAX_STEPS_PER_EPISODE: int = 500
 DEFAULT_SEED: int = 0
 
 # Evaluation defaults

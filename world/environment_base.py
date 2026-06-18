@@ -173,6 +173,16 @@ class BaseGridEnvironment(ABC):
         """
         return np.ones(self.state_dim, dtype=np.float32)
 
+    @property
+    def angular_dims(self) -> tuple[int, ...]:
+        """Observation indices that are angular (periodic) quantities.
+
+        The env owns its state-layout semantics, so consumers (e.g. an agent's
+        normaliser) can wrap these dims by their period (``observation_high``)
+        without knowing the concrete environment type. Defaults to none.
+        """
+        return ()
+
     def _grid_dims(self) -> tuple[int, int]:
         """Return (rows, cols) of the grid, loading from file if not yet reset.
 
