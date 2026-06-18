@@ -78,26 +78,31 @@ DQN hyperparameters (`--agent dqn` only):
 
 The online network is a two-hidden-layer MLP (width `128`, `agents.defaults.DQN_N_HIDDEN_NODES`) trained with the Huber (SmoothL1) loss. The replay buffer holds transitions in numpy ring buffers and returns sampled minibatches as torch tensors already placed on the agent's device. Learning starts once the buffer holds `agents.defaults.REPLAY_DEFAULT_START_SIZE` (`10000`) transitions.
 
-Intrinsic motivation (`--agent dqn` only):
+Intrinsic motivation (`--agent dqn` or `--agent a3c`):
 
-- `--curiosity {no,grid_count}`: intrinsic exploration bonus (default `no`). `grid_count` adds a count-based bonus (`beta / sqrt(visit_count)`) per discretized cell.
-- `--curiosity-beta`: scale for the curiosity bonus (default `0.5`).
-- Curiosity counting uses a fixed resolution of `1.0` world units (`agents.defaults.CURIOSITY_RESOLUTION_DEFAULT`), independent of `--step-size`.
+- `--curiosity {no,grid_count,grid-count}`: intrinsic exploration bonus (default `no`). `grid_count` / `grid-count` adds a count-based bonus (`beta / sqrt(visit_count)`) per discretized cell.
+- `--curiosity-beta`: scale for the curiosity bonus (default `0.1`).
+- Curiosity counting uses a fixed resolution of `1.0` world units (`agents.defaults.CURIOSITY_RESOLUTION_DEFAULT`), independent of `--step-size`. A3C keeps a separate visit table per worker, avoiding target-coordinate shaping while still discouraging repeated local loops.
 
 A3C hyperparameters (`--agent a3c` only):
 
-- A3C runs multiple asynchronous actor-learner processes that share a single network in CPU shared memory and push gradients Hogwild-style. The device is forced to `cpu` regardless of `--device` because shared-memory multiprocessing requires CPU tensors. Exploration uses the stochastic softmax policy plus an entropy bonus (no epsilon, no intrinsic reward).
+- A3C runs multiple asynchronous actor-learner processes that share a single network in CPU shared memory and push gradients Hogwild-style. The device is forced to `cpu` regardless of `--device` because shared-memory multiprocessing requires CPU tensors. Exploration uses the stochastic softmax policy, an entropy bonus, the explicit random-action schedule below, and optional count-based curiosity.
 - `--a3c-workers`: number of asynchronous actor-learner processes (default `4`).
+- `--a3c-lr`: A3C optimizer learning rate (default `1e-4`).
 - `--a3c-t-max`: max rollout length between gradient pushes / n-step return horizon (default `5`).
-- `--a3c-entropy-beta`: entropy regularization coefficient, uniform across workers (default `0.01`).
-- `--a3c-value-coef`: weight on the value loss (default `0.5`).
+- `--a3c-entropy-beta`: entropy regularization coefficient, uniform across workers (default `0.05`).
+- `--a3c-random-action-start`, `--a3c-random-action-final`, `--a3c-random-action-decay-steps`: epsilon-soft exploration schedule (defaults `0.40 → 0.10` over `1000000` env steps). A3C samples from `(1 - eps) * policy + eps * uniform`, so exploratory actions remain part of the actor objective instead of being discarded.
+- `--a3c-progress-reward-scale`: training-only reward for reducing distance to the target (default `0.0`, disabled). This is an explicit diagnostic knob rather than the default learning signal. The unshaped environment return is still logged as `rollout/episode_reward`; the reward used for A3C updates is logged separately as `rollout/shaped_reward`.
+- `--a3c-value-coef`: weight on the value loss (default `0.25`).
 - `--a3c-total-steps`: global environment-step budget across all workers (defaults to `--episodes * --max-steps`).
-- `--gamma` and `--lr` are reused (defaults `0.99` and `1e-3`; A3C's own default learning rate is `1e-4` when constructed directly).
+- `--gamma` is reused (default `0.99`).
+
+A3C uses Huber critic loss and clips bootstrapped value targets to the bounded-return scale (`agents.defaults.A3C_VALUE_TARGET_CLIP`, default `100.0`) so the critic cannot amplify its own overestimates during sparse-reward exploration.
 
 Example:
 
 ```powershell
-uv run python train_deep.py --env continuous --agent a3c --a3c-workers 8 --max-steps 200 --lr 1e-4
+uv run python train_deep.py --env continuous --agent a3c --a3c-workers 8 --max-steps 200 --a3c-lr 1e-4
 ```
 
 The `Trainer` (`training/trainer.py`) is algorithm-agnostic and supports an optional environment-step budget (`max_env_steps`), per-episode mean of agent update metrics, best/last checkpointing via `BaseAgent.save_checkpoint`/`load_checkpoint`, and history-to-disk. Agents that own their training loop (those with `BaseAgent.trains_externally = True`, like A3C) are detected by the Trainer, which then delegates rollout generation to the agent's `train_iter()` while still owning evaluation, logging, checkpointing, and W&B on the shared global network. Both new environments accept an optional per-episode `seed` in `reset(seed=...)`. The continuous environment exposes `observation_high` per-dimension upper bounds (grid size for x/y, 360° for theta, `max_sensor_range` per sensor when sensors are enabled) and `angular_dims` (the periodic observation indices, e.g. theta); the DQN agent wraps the angular dims by their period, scales every observation by `observation_high`, and clips to `[0, 1]`.
