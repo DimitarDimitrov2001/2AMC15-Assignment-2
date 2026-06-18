@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from world.defaults import COLLISION_PENALTY, GOAL_REWARD, LIVING_PENALTY
 from world.grid import Grid
 from world.grid_codes import (
     BOUNDARY_WALL_CELL,
@@ -33,11 +34,6 @@ from world.grid_codes import (
 # Reward function contract shared by every grid environment:
 # fn(grid, pos, new_pos, collision) -> reward.
 RewardFn = Callable[[np.ndarray, np.ndarray, np.ndarray, bool], float]
-
-# Default reward values (shared pre-assignment spec).
-GOAL_REWARD: float = 5.0
-LIVING_PENALTY: float = -0.01
-COLLISION_PENALTY: float = -0.01
 
 
 def cell_index(pos: np.ndarray) -> tuple[int, int]:

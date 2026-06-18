@@ -29,6 +29,7 @@ from typing import Any
 
 import numpy as np
 
+from world.defaults import *
 from world.environment_base import (
     LIVING_PENALTY,
     BaseGridEnvironment,
@@ -36,25 +37,6 @@ from world.environment_base import (
     cell_index,
 )
 from world.grid_codes import EMPTY_CELL, TARGET_CELL
-
-N_ACTIONS: int = 3          # rotate_left, rotate_right, move_forward
-
-# Action identifiers
-type Action             = int
-ROTATE_LEFT: Action     = 0
-ROTATE_RIGHT: Action    = 1
-MOVE_FORWARD: Action    = 2
-
-# Default environment parameters
-DEFAULT_STEP_SIZE: float        = 0.1
-DEFAULT_ROTATION_STEP: float    = 30.0
-DEFAULT_MAX_SENSOR_RANGE: float = 3.0
-DEFAULT_ACTION_SIGMA: float     = 0.0
-DEFAULT_SENSORY_SIGMA: float    = 0.0
-DEFAULT_INITIAL_HEADING: float  = 0.0
-DEFAULT_SENSOR_ANGLES: np.ndarray = np.arange(0, 360, 45)
-DEFAULT_RAY_STEP: float           = 0.1
-DEFAULT_RANDOM_SEED: int        = 0
 
 
 class ContinuousEnvironment(BaseGridEnvironment):

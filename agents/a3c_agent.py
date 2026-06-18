@@ -87,7 +87,7 @@ class _SharedAdam(torch.optim.Adam):
 
 def _worker_process(
     worker_id: int,
-    env_fn: Callable[[], BaseGridEnvironment],
+    env_fn: Callable[[int], BaseGridEnvironment],
     shared_net: _ActorCriticNet,
     shared_optimizer: _SharedAdam,
     obs_scale: np.ndarray,
@@ -109,7 +109,7 @@ def _worker_process(
     count terminations.
     """
     rng = np.random.default_rng(seed + worker_id * 1000)
-    env = env_fn()
+    env = env_fn(seed)
 
     while True:
         with global_step.get_lock():
@@ -118,17 +118,9 @@ def _worker_process(
             break
 
         # ----- episode reset -----
-        try:
-            result = env.reset(seed=int(rng.integers(1 << 30)))
-        except TypeError:
-            result = env.reset()
+        state = env.reset(seed=int(rng.integers(1 << 30)))
 
-        if isinstance(result, tuple):
-            raw_state, _ = result
-        else:
-            raw_state = result
-
-        state = np.asarray(raw_state, dtype=np.float32) * obs_scale
+        state = np.asarray(state, dtype=np.float32) * obs_scale
         episode_reward = 0.0
         episode_steps = 0
         terminated = False
@@ -197,7 +189,7 @@ def _worker_process(
                 R = r + gamma * R
                 returns.insert(0, R)
 
-            # --- gradient update on shared parameters (Hogwild!: no lock) ---
+            # --- gradient update on shared parameters ---
             states_t = torch.as_tensor(np.stack(states_buf), dtype=torch.float32)
             actions_t = torch.as_tensor(actions_buf, dtype=torch.int64)
             returns_t = torch.as_tensor(returns, dtype=torch.float32)
@@ -232,6 +224,8 @@ def _worker_process(
             "rollout/success": float(terminated),
             "losses/policy_loss": policy_loss_sum / max(update_count, 1),
             "losses/value_loss": value_loss_sum / max(update_count, 1),
+            "qvals/returns": returns_t / max(update_count, 1),
+            "qvals/advantages": advantages  / max(update_count, 1)
         })
 
     report_queue.put(None)
@@ -267,9 +261,9 @@ class A3CAgent(BaseAgent):
         self,
         env: BaseGridEnvironment,
         env_fn: Callable[[], BaseGridEnvironment],
-        seed: int = 0,
-        total_steps: int = 1_000_000,
-        max_steps_per_episode: int = 200,
+        seed: int,
+        total_steps: int,
+        max_steps_per_episode: int,
         n_workers: int = A3C_N_WORKERS,
         t_max: int = A3C_T_MAX,
         gamma: float = A3C_GAMMA,
@@ -343,7 +337,7 @@ class A3CAgent(BaseAgent):
                     self._max_grad_norm,
                     self._total_steps,
                     self._max_steps_per_episode,
-                    self._seed,
+                    self._seed + worker_id, # Have different seed for each subagent
                     report_queue,
                     global_step,
                 ),
