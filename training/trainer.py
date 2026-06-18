@@ -416,8 +416,16 @@ class Trainer:
         if not np.isfinite(loss):
             loss = self._window_mean(window, "losses/policy_loss")
         q_value = self._window_mean(window, "qvals/q_taken")
-        # Epsilon is a schedule value, not a noisy sample, so report the latest.
-        epsilon = metrics.get("charts/epsilon", float("nan"))
+        if not np.isfinite(q_value):
+            q_value = self._window_mean(window, "qvals/state_value")
+        if not np.isfinite(q_value):
+            q_value = self._window_mean(window, "qvals/returns")
+        # DQN reports epsilon; A3C reports explicit random-action probability
+        # plus entropy. Prefer the action probability for terminal readability.
+        exploration = metrics.get(
+            "charts/epsilon",
+            metrics.get("charts/random_action_prob", metrics.get("charts/entropy", float("nan"))),
+        )
 
         print(
             f"Episode {episode:5d} | "
@@ -425,8 +433,8 @@ class Trainer:
             f"len={length:5.1f} | "
             f"term_rate={term_rate:4.2f} | "
             f"loss={loss:8.4f} | "
-            f"q={q_value:7.3f} | "
-            f"eps={epsilon:4.2f} | "
+            f"value={q_value:7.3f} | "
+            f"explore={exploration:4.2f} | "
             f"steps={self.global_step:7d}"
         )
 

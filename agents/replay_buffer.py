@@ -78,10 +78,10 @@ class ReplayBuffer:
         self._rng = np.random.default_rng(seed)
 
         self._states = np.zeros((self._capacity, obs_dim), dtype=np.float32)
-        self._next_states = np.zeros((capacity, obs_dim), dtype=np.float32)
-        self._actions = np.zeros(capacity, dtype=np.int64)
-        self._rewards = np.zeros(capacity, dtype=np.float32)
-        self._dones = np.zeros(capacity, dtype=np.float32)
+        self._next_states = np.zeros((self._capacity, obs_dim), dtype=np.float32)
+        self._actions = np.zeros(self._capacity, dtype=np.int64)
+        self._rewards = np.zeros(self._capacity, dtype=np.float32)
+        self._dones = np.zeros(self._capacity, dtype=np.float32)
 
         self._size = 0
         self._next_idx = 0

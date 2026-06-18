@@ -39,6 +39,7 @@ from agents.a3c_agent import A3CAgent
 from agents.epsilon_schedules import ConstantEpsilon, EpsilonSchedule, ExponentialEpsilonDecay, LinearEpsilonAnnealing
 from agents.defaults import (
     A3C_DEFAULT_TOTAL_STEPS,
+    A3C_LEARNING_RATE,
     CURIOSITY_RESOLUTION_DEFAULT,
     EPSILON_DEFAULT_DECAY,
     EPSILON_DEFAULT_MAX,
@@ -56,9 +57,14 @@ from agents.defaults import (
     DQN_DEFAULT_UPDATE_FREQ,
     DQN_DEFAULT_TARGET_UPDATE_FREQ,
     A3C_N_WORKERS,
+    A3C_PROGRESS_REWARD_SCALE,
+    A3C_RANDOM_ACTION_DECAY_STEPS,
+    A3C_RANDOM_ACTION_FINAL,
+    A3C_RANDOM_ACTION_START,
     A3C_T_MAX,
     A3C_ENTROPY_BETA,
     A3C_VALUE_COEF,
+    BETA_DEFAULT,
 )
 from training import Trainer, TrainerConfig
 from training.defaults import (
@@ -225,9 +231,15 @@ def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> Base
             n_workers=args.a3c_workers,
             t_max=args.a3c_t_max,
             gamma=args.gamma,
-            learning_rate=args.lr,
+            learning_rate=args.a3c_lr,
             entropy_beta=args.a3c_entropy_beta,
             value_coef=args.a3c_value_coef,
+            random_action_start=args.a3c_random_action_start,
+            random_action_final=args.a3c_random_action_final,
+            random_action_decay_steps=args.a3c_random_action_decay_steps,
+            progress_reward_scale=args.a3c_progress_reward_scale,
+            curiosity_beta=(args.curiosity_beta if args.curiosity == "grid_count" else 0.0),
+            curiosity_resolution=CURIOSITY_RESOLUTION_DEFAULT,
             device=device,
         ),
     }
@@ -311,10 +323,24 @@ def parse_args() -> Namespace:
 
     parser.add_argument("--a3c-workers", type=int, default=A3C_N_WORKERS, dest="a3c_workers",
                         help="A3C only: number of asynchronous actor-learner processes.")
+    parser.add_argument("--a3c-lr", type=float, default=A3C_LEARNING_RATE, dest="a3c_lr",
+                        help="A3C only: optimizer learning rate.")
     parser.add_argument("--a3c-t-max", type=int, default=A3C_T_MAX, dest="a3c_t_max",
                         help="A3C only: max rollout length between gradient pushes.")
     parser.add_argument("--a3c-entropy-beta", type=float, default=A3C_ENTROPY_BETA, dest="a3c_entropy_beta",
                         help="A3C only: entropy regularization coefficient (uniform across workers).")
+    parser.add_argument("--a3c-random-action-start", type=float, default=A3C_RANDOM_ACTION_START,
+                        dest="a3c_random_action_start",
+                        help="A3C only: initial probability of forcing a uniform-random action.")
+    parser.add_argument("--a3c-random-action-final", type=float, default=A3C_RANDOM_ACTION_FINAL,
+                        dest="a3c_random_action_final",
+                        help="A3C only: final random-action probability after decay.")
+    parser.add_argument("--a3c-random-action-decay-steps", type=int, default=A3C_RANDOM_ACTION_DECAY_STEPS,
+                        dest="a3c_random_action_decay_steps",
+                        help="A3C only: env steps over which random-action probability decays.")
+    parser.add_argument("--a3c-progress-reward-scale", type=float, default=A3C_PROGRESS_REWARD_SCALE,
+                        dest="a3c_progress_reward_scale",
+                        help="A3C only: training-only reward for reducing distance to the target; <=0 disables.")
     parser.add_argument("--a3c-value-coef", type=float, default=A3C_VALUE_COEF, dest="a3c_value_coef",
                         help="A3C only: weight on the value loss.")
     parser.add_argument("--a3c-total-steps", type=int, default=A3C_DEFAULT_TOTAL_STEPS, dest="a3c_total_steps",
@@ -334,8 +360,9 @@ def parse_args() -> Namespace:
     parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
                         help="Max steps for the visualization rollout.")
     parser.add_argument("--curiosity", type=str, default="no", dest="curiosity",
-                        help="What intrinsic motivation to use, currently supported: no, grid_count.")
-    parser.add_argument("--curiosity-beta", type=float, default=0.5, dest="curiosity_beta",
+                        choices=("no", "grid_count", "grid-count"),
+                        help="DQN/A3C only: intrinsic motivation to use. Supports no, grid_count, and grid-count.")
+    parser.add_argument("--curiosity-beta", type=float, default=BETA_DEFAULT, dest="curiosity_beta",
                         help="Beta value for the curiosity term.")
     parser.add_argument("--target-reward", type=float, default=GOAL_REWARD, dest="target_reward",
                         help="Reward for reaching the target.")
@@ -343,7 +370,9 @@ def parse_args() -> Namespace:
                         help="Penalty for taking an action.")
     parser.add_argument("--collision-penalty", type=float, default=COLLISION_PENALTY, dest="collision_penalty",
                         help="Penalty for colliding with a wall or obstacle.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.curiosity = args.curiosity.replace("-", "_")
+    return args
 
 
 def _build_config(args: Namespace) -> TrainerConfig:
