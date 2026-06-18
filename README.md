@@ -28,41 +28,41 @@ All commands below should be run from the repository root, the folder that conta
 General form:
 
 ```powershell
-uv run python train_deep.py --env {minimal|continuous} [options]
+uv run python train_deep.py [options]
 ```
 
 Example:
 
 ```powershell
-uv run python train_deep.py --env minimal --agent dqn --episodes 5000 --max-steps 200 --visualize
+uv run python train_deep.py
 ```
 
 Options:
 
 Environment and training:
 
-- `--env {minimal,continuous}`: environment to train on (default `minimal`).
+- `--env {minimal,continuous}`: environment to train on (default `continuous`).
 - `--no-sensors`: continuous env only. Drop the 8 distance sensors from the observation, leaving the bare `(x, y, theta)` state (state dim `11 → 3`). Sensors are included by default.
-- `--step-size`: override the env move/step size (defaults: continuous `0.1`, minimal `1.0`). Larger values cross the map in fewer steps, so the goal is reachable in a shorter horizon and episodes run faster.
-- `--agent {random,dqn,a3c}`: agent to train (default `random`).
-- `--grid`: path to a `.npy` grid file (default `grid_configs/small_grid.npy`).
-- `--start-pos X Y`: fixed continuous (x, y) start for evaluation and visualization (and for training unless `--exploring-starts` is set). Omit to use the grid's START_CELL, falling back to a random empty cell each episode (note: `small_grid.npy` has no START_CELL, so without this flag the start is randomized per episode).
+- `--step-size`: override the env move/step size (defaults: continuous `0.5`, minimal `0.5`). Larger values cross the map in fewer steps, so the goal is reachable in a shorter horizon and episodes run faster.
+- `--agent {random,dqn,a3c}`: agent to train (default `dqn`).
+- `--grid`: path to a `.npy` grid file (default `grid_configs/A1_grid.npy`).
+- `--start-pos X Y`: fixed continuous (x, y) start for evaluation and visualization (and for training unless `--exploring-starts` is set). Omit to use the grid's START_CELL, falling back to a random empty cell each episode.
 - `--eval-starting-pos X Y`: fixed continuous (x, y) start used only for evaluation and visualization. Overrides `--start-pos` for the eval/viz env while leaving the training start unchanged. Omit to fall back to `--start-pos`.
 - `--exploring-starts`: use random start positions during training (exploring starts) while evaluation/visualization keep the fixed `--start-pos` / `--eval-starting-pos`. Helps discovery on sparse-reward grids by seeding the replay buffer with goal-reaching transitions from varied starts.
 - `--episodes`, `--max-steps`, `--seed`: training budget and seed (default `3000` episodes, `500` max steps per episode, seed `0`).
 - `--device {auto,cpu,cuda,mps}`: compute device for learning agents (default `auto`, which picks cuda > mps > cpu). For the small grid MLP, `cpu` is often fastest.
-- `--eval-interval`, `--eval-episodes`: evaluation cadence and rollouts per evaluation (defaults `10` and `5`).
-- `--log-interval`: print window-averaged metrics (and log a rollout image when `--visualize`) every N episodes (default `1`). Terminal lines show mean reward, length, termination rate, TD loss, Q-value, and epsilon over the last `log_interval` episodes; W&B receives per-episode metrics under grouped keys (`rollout/*`, `losses/*`, `qvals/*`, `charts/*`).
-- `--out-dir`: when set, writes `best.pt`/`last.pt` checkpoints and `history.json` there.
+- `--eval-interval`, `--eval-episodes`: evaluation cadence and rollouts per evaluation (defaults `25` and `10`).
+- `--log-interval`: print window-averaged metrics every N episodes (default `10`). Terminal lines show mean reward, length, termination rate, TD loss, Q-value, and epsilon over the last `log_interval` episodes; W&B receives per-episode metrics under grouped keys (`rollout/*`, `losses/*`, `qvals/*`, `charts/*`).
+- `--out-dir`: output directory for checkpoints and `history.json` (default `results/<agent>_<timestamp>`).
 - `--wandb`, `--wandb-group`: enable Weights & Biases logging and optionally bucket runs under a group name.
-- `--visualize`, `--viz-out`, `--viz-max-steps`: save a post-training rollout path image (reuses `visualize_random_agent.py`). When combined with `--wandb`, a greedy rollout is also rendered every `--log-interval` episodes and logged to the W&B `viz/rollout` panel (frames saved under `<out-dir>/rollouts/`).
+- `--no-visualize`, `--viz-out`, `--viz-max-steps`: visualization is enabled by default; `--no-visualize` disables the post-training rollout path image. When combined with `--wandb`, a greedy rollout is also rendered every `--log-interval` episodes and logged to the W&B `viz/rollout` panel (frames saved under `<out-dir>/rollouts/`).
 
 DQN exploration (`--agent dqn` only):
 
-- `--epsilon`: start epsilon for linear annealing, or fixed rate when `--epsilon-duration 0` (default `0.1`). Eval always uses greedy action selection regardless of this value.
+- `--epsilon-max`: start epsilon for linear annealing, or fixed rate when `--epsilon-duration 0` (default `1.0`). Eval always uses greedy action selection regardless of this value.
 - `--epsilon-min`: minimum epsilon after annealing (default `0.05`).
-- `--epsilon-duration`: number of steps to anneal epsilon over (default `150000`; `0` keeps epsilon fixed at `--epsilon`).
-- `--epsilon-start-step`: steps before epsilon annealing starts (default `1000`).
+- `--epsilon-duration`: number of steps to anneal epsilon over (default `150000`; `0` keeps epsilon fixed at `--epsilon-max`).
+- `--epsilon-start-step`: steps before epsilon annealing starts (default `0`).
 
 DQN hyperparameters (`--agent dqn` only):
 
@@ -104,12 +104,17 @@ The `Trainer` (`training/trainer.py`) is algorithm-agnostic and supports an opti
 
 ## Outputs
 
-`train_deep.py` writes the following artifacts when `--out-dir` is set:
+`train_deep.py` writes the following artifacts under `--out-dir`, or under `results/<agent>_<timestamp>` by default:
 
-- `best.pt` / `last.pt`: network checkpoints (best eval reward and final episode).
+- `best.pt` / `last.pt`: network checkpoints (best `eval/mean_reward` and final episode).
 - `history.json`: per-episode metric history.
-- `rollouts/ep_XXXXXX.png`: in-training rollout images when `--visualize` and `--wandb` are both set.
-- `path_<agent>_<env>.png`: post-training rollout path image when `--visualize` is set.
+- `config.json`: resolved CLI/trainer configuration for the run.
+- `metrics.csv`: per-episode metrics in tabular form.
+- `training_curves.png`: reward, eval, success-rate, and TD-loss curves.
+- `rollouts/ep_XXXXXX.png`: in-training rollout images when visualization and `--wandb` are both enabled.
+- `policy_rollout.json` / `policy_rollout.png` / `policy_rollout.html`: greedy rollout rendered from the best available checkpoint unless `--no-visualize` is set.
+
+When `--wandb` is enabled, the post-training files, including `policy_rollout.html`, are also logged as a W&B artifact.
 
 ## Project Structure
 

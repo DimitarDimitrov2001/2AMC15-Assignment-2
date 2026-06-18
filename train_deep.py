@@ -11,11 +11,13 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 import functools
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 import re
+from typing import Any
 
 # Force a headless backend before pyplot is imported (via visualize_random_agent),
 # so periodic in-training rendering never tries to open a GUI window.
@@ -60,6 +62,9 @@ from agents.defaults import (
 )
 from training import Trainer, TrainerConfig
 from training.defaults import (
+    DEFAULT_ENV_NAME,
+    DEFAULT_GRID_FILENAME,
+    DEFAULT_OUTPUT_ROOT,
     DEFAULT_TOTAL_EPISODES,
     DEFAULT_MAX_STEPS_PER_EPISODE,
     DEFAULT_SEED,
@@ -68,6 +73,7 @@ from training.defaults import (
     DEFAULT_LOG_INTERVAL,
     DEFAULT_VIZ_MAX_STEPS,
 )
+from utils.artifacts import log_wandb_artifact, save_deep_rl_run_artifacts
 from world import GRID_CONFIGS_FP, ContinuousEnvironment, MinimalEnvironment
 from visualize_random_agent import visualize_agent
 
@@ -234,18 +240,18 @@ def parse_args() -> Namespace:
     """Parse the deep-RL training CLI arguments."""
     parser = ArgumentParser(description="Deep-RL training entry point.")
 
-    parser.add_argument("--env", choices=("minimal", "continuous"), default="minimal",
+    parser.add_argument("--env", choices=("minimal", "continuous"), default=DEFAULT_ENV_NAME,
                         help="Environment to train on.")
     parser.add_argument("--no-sensors", action="store_false", dest="use_sensors",
                         help="Continuous env only: drop the 8 distance sensors from the "
                              "observation, leaving the bare (x, y, theta) state.")
     parser.add_argument("--step-size", type=float, default=None, dest="step_size",
-                        help="Override the env move/step size (defaults: continuous 0.1, "
-                             "minimal 1.0). Larger values mean fewer steps to cross the map, "
+                        help="Override the env move/step size (defaults: continuous 0.5, "
+                             "minimal 0.5). Larger values mean fewer steps to cross the map, "
                              "so the goal is reachable in a shorter horizon and episodes run faster.")
     parser.add_argument("--agent", choices=("random", "dqn", "a3c"), default="dqn",
                         help="Agent to train.")
-    parser.add_argument("--grid", type=Path, default=GRID_CONFIGS_FP / "small_grid.npy",
+    parser.add_argument("--grid", type=Path, default=GRID_CONFIGS_FP / DEFAULT_GRID_FILENAME,
                         help="Path to a .npy grid file.")
     parser.add_argument("--start-pos", type=float, nargs=2, default=None, dest="start_pos",
                         metavar=("X", "Y"),
@@ -315,13 +321,14 @@ def parse_args() -> Namespace:
                         help="A3C only: global env-step budget (defaults to episodes * max-steps).")
 
     parser.add_argument("--out-dir", type=Path, default=None, dest="out_dir",
-                        help="Output dir for checkpoints and history JSON.")
+                        help="Output dir for checkpoints and history JSON "
+                             f"(default: {DEFAULT_OUTPUT_ROOT}/<agent>_<timestamp>).")
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
     parser.add_argument("--wandb-group", type=str, default=None, dest="wandb_group",
                         help="W&B group name to bucket related runs under.")
 
     parser.add_argument("--no-visualize", action="store_true", dest="no_visualize",
-                        help="Save a post-training rollout path image.")
+                        help="Disable rollout path visualizations.")
     parser.add_argument("--viz-out", type=Path, default=None, dest="viz_out",
                         help="Visualization output path (defaults under --out-dir or CWD).")
     parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
@@ -341,8 +348,8 @@ def parse_args() -> Namespace:
 
 def _build_config(args: Namespace) -> TrainerConfig:
     """Materialise a TrainerConfig from parsed CLI args."""
-    checkpoint_dir = str(args.out_dir) if args.out_dir is not None else None
-    history_path = str(args.out_dir / "history.json") if args.out_dir is not None else None
+    checkpoint_dir = str(args.out_dir)
+    history_path = str(args.out_dir / "history.json")
 
     # Convert Path objects to strings for W&B logging
     full_config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
@@ -358,21 +365,156 @@ def _build_config(args: Namespace) -> TrainerConfig:
         eval_episodes=args.eval_episodes,
         log_interval=args.log_interval,
         checkpoint_dir=checkpoint_dir,
-        save_best=checkpoint_dir is not None,
-        save_last=checkpoint_dir is not None,
+        save_best=True,
+        save_last=True,
         history_path=history_path,
         use_wandb=args.wandb,
         wandb_group=args.wandb_group,
         run_name=f"{args.agent}_{args.env}_{grid_stem}_{time}",
         full_config=full_config,
+        finish_wandb_on_train_end=not args.wandb,
     )
+
+
+def _default_out_dir(agent: str) -> Path:
+    """Return the default timestamped directory for run artifacts."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path(DEFAULT_OUTPUT_ROOT) / f"{agent}_{timestamp}"
+
+
+def _run_config(args: Namespace, config: TrainerConfig, device: str) -> dict[str, Any]:
+    """Return the JSON configuration saved with run artifacts."""
+    payload = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
+    return {
+        "cli": payload,
+        "trainer": asdict(config),
+        "resolved_device": device,
+    }
+
+
+def _reset_env_for_rollout(env: BaseGridEnvironment, seed: int) -> np.ndarray:
+    """Reset an environment for artifact rollout generation."""
+    try:
+        state = env.reset(seed=seed)
+    except TypeError:
+        state = env.reset()
+    return np.asarray(state, dtype=np.float32)
+
+
+def _step_env_for_rollout(
+    env: BaseGridEnvironment,
+    action: int,
+) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+    """Step an env while supporting both 4-value and 5-value step APIs."""
+    result = env.step(action)
+    if len(result) == 4:
+        next_state, reward, terminated, info = result
+        truncated = False
+    elif len(result) == 5:
+        next_state, reward, terminated, truncated, info = result
+    else:
+        raise ValueError("env.step(action) must have either 4 or 5 values.")
+    return (
+        np.asarray(next_state, dtype=np.float32),
+        float(reward),
+        bool(terminated),
+        bool(truncated),
+        dict(info),
+    )
+
+
+def _json_safe_info(info: dict[str, Any]) -> dict[str, Any]:
+    """Convert environment info values into JSON-safe objects."""
+    safe: dict[str, Any] = {}
+    for key, value in info.items():
+        if isinstance(value, np.ndarray):
+            safe[key] = value.tolist()
+        elif isinstance(value, np.generic):
+            safe[key] = value.item()
+        else:
+            safe[key] = value
+    return safe
+
+
+def _run_policy_rollout(
+    args: Namespace,
+    agent: BaseAgent,
+    eval_start: tuple[float, float] | None,
+    max_steps: int,
+) -> dict[str, Any]:
+    """Run one greedy rollout for artifact generation."""
+    env = _build_env(args.env, args.grid, args.seed + 20_000, eval_start, args.use_sensors, args.step_size)
+    agent.on_episode_start(0)
+    state = _reset_env_for_rollout(env, seed=args.seed + 20_000)
+    initial_grid = np.copy(env.grid)
+    positions = [np.asarray(env.pos, dtype=float).copy()]
+    headings = [float(getattr(env, "theta", 0.0))]
+    actions: list[int] = []
+    rewards: list[float] = []
+    infos: list[dict[str, Any]] = []
+    total_reward = 0.0
+    terminated = False
+    truncated = False
+
+    for step_idx in range(max_steps):
+        action = agent.select_action(state, training=False)
+        next_state, reward, terminated, truncated, info = _step_env_for_rollout(env, action)
+        if step_idx == max_steps - 1 and not terminated and not truncated:
+            truncated = True
+            info["time_limit"] = True
+
+        actions.append(int(action))
+        rewards.append(float(reward))
+        infos.append(_json_safe_info(info))
+        total_reward += float(reward)
+        positions.append(np.asarray(env.pos, dtype=float).copy())
+        headings.append(float(getattr(env, "theta", 0.0)))
+        state = next_state
+
+        if terminated or truncated:
+            break
+
+    return {
+        "grid": initial_grid,
+        "positions": np.asarray(positions, dtype=float),
+        "headings": headings,
+        "actions": actions,
+        "rewards": rewards,
+        "infos": infos,
+        "total_reward": float(total_reward),
+        "steps": len(actions),
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "success": bool(terminated),
+        "world_stats": dict(env.world_stats),
+    }
+
+
+def _best_checkpoint_path(config: TrainerConfig) -> Path | None:
+    """Return the checkpoint path to use for final rollout rendering."""
+    if config.checkpoint_dir is None:
+        return None
+    checkpoint_dir = Path(config.checkpoint_dir)
+    best_path = checkpoint_dir / "best.pt"
+    if best_path.exists():
+        return best_path
+    last_path = checkpoint_dir / "last.pt"
+    if last_path.exists():
+        return last_path
+    return None
+
+
+def _wandb_artifact_name(name: str) -> str:
+    """Return a W&B-safe artifact name."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
 
 
 def main() -> None:
     """Build env + agent + Trainer, train, and optionally visualize."""
     args = parse_args()
-    if args.out_dir is not None:
-        args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out_dir is None:
+        args.out_dir = _default_out_dir(args.agent)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
 
     device = _resolve_device(args.device)
     if args.agent == "a3c" and device != "cpu":
@@ -409,26 +551,53 @@ def main() -> None:
             ))
 
     trainer = Trainer(env=env, agent=agent, config=config, eval_env=eval_env, viz_fn=viz_fn)
-    history = trainer.train()
+    try:
+        history = trainer.train()
 
-    print(f"Training finished. Logged episodes: {len(history)}")
-    if history:
-        print(f"Last episode metrics: {history[-1]}")
+        print(f"Training finished. Logged episodes: {len(history)}")
+        if history:
+            print(f"Last episode metrics: {history[-1]}")
 
-    if not args.no_visualize:
-        viz_out = args.viz_out
-        if viz_out is None:
-            base = args.out_dir if args.out_dir is not None else Path(".")
-            viz_out = base / f"path_{args.agent}_{args.env}.png"
-        viz_env = _build_env(args.env, args.grid, args.seed, eval_start, args.use_sensors, args.step_size)
-        out = visualize_agent(
-            viz_env,
-            agent,
-            max_steps=args.viz_max_steps,
-            out=viz_out,
-            title=f"{args.agent} agent on {args.env}\ngrid: {args.grid.name}",
+        rollout = None
+        checkpoint_path = _best_checkpoint_path(config)
+        if checkpoint_path is not None:
+            agent.load_checkpoint(str(checkpoint_path))
+            print(f"loaded checkpoint for final rollout -> {checkpoint_path}")
+
+        if not args.no_visualize:
+            rollout = _run_policy_rollout(
+                args=args,
+                agent=agent,
+                eval_start=eval_start,
+                max_steps=args.viz_max_steps,
+            )
+
+        artifact_paths = save_deep_rl_run_artifacts(
+            out_dir=args.out_dir,
+            run_config=_run_config(args, config, device),
+            history=history,
+            agent=agent,
+            rollout=rollout,
         )
-        print(f"saved visualization -> {out}")
+        artifact_paths.extend(
+            path
+            for path in (args.out_dir / "best.pt", args.out_dir / "last.pt", args.out_dir / "history.json")
+            if path.exists()
+        )
+
+        if args.wandb:
+            log_wandb_artifact(
+                artifact_name=_wandb_artifact_name(f"{config.run_name or args.agent}_artifacts"),
+                artifact_type="training-run",
+                paths=artifact_paths,
+                aliases=["latest", "best-policy"],
+            )
+
+        if rollout is not None:
+            print(f"saved rollout html -> {args.out_dir / 'policy_rollout.html'}")
+    finally:
+        if args.wandb:
+            trainer.finish_wandb()
 
 
 if __name__ == "__main__":

@@ -210,7 +210,7 @@ class DQNAgent(BaseAgent):
             action=transition.action,
             reward=reward,
             next_state=self._preprocess(phi_tp1),
-            done=transition.terminated,
+            done=bool(transition.terminated or transition.truncated),
         )
         self._total_steps += 1
         self.epsilon_scheduler.step()
