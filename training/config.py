@@ -53,3 +53,4 @@ class TrainerConfig:
     wandb_project: str = DEFAULT_WANDB_PROJECT # Name of the project (Can remain unchanged)
     wandb_group: str | None = None # Group name (To group related runs) (Optional)
     run_name: str | None = None # Run name (Optional)
+    finish_wandb_on_train_end: bool = True # Keep run open for post-training artifacts when False
