@@ -46,6 +46,8 @@ from agents.defaults import (
     DQN_DEFAULT_GAMMA,
     DQN_DEFAULT_LEARNING_RATE,
     DQN_DEFAULT_BATCH_SIZE,
+    DQN_DEFAULT_REWARD_CLIP,
+    DQN_DEFAULT_GRAD_CLIP_NORM,
     EPSILON_SCHEDULER_DEFAULT,
     REPLAY_DEFAULT_CAPACITY,
     DQN_DEFAULT_NO_OBS_IN_STATE,
@@ -179,6 +181,8 @@ def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> Base
             no_obs_in_state=args.stack_size,
             update_freq=args.update_freq,
             target_update_freq=args.target_update_freq,
+            reward_clip=args.reward_clip if args.reward_clip > 0 else None,
+            grad_clip_norm=args.grad_clip_norm if args.grad_clip_norm > 0 else None,
             epsilon_scheduler=_build_epsilon_schedule(
                 choice=args.epsilon_schedule,
                 epsilon_max=args.epsilon_max,
@@ -294,6 +298,10 @@ def parse_args() -> Namespace:
                         help="Update online network every N steps.")
     parser.add_argument("--target-update-freq", type=int, default=DQN_DEFAULT_TARGET_UPDATE_FREQ, dest="target_update_freq",
                         help="Update target network every N steps.")
+    parser.add_argument("--reward-clip", type=float, default=(DQN_DEFAULT_REWARD_CLIP or 0.0), dest="reward_clip",
+                        help="Symmetric clip on the extrinsic reward (intrinsic bonus is added after); <=0 disables.")
+    parser.add_argument("--grad-clip-norm", type=float, default=(DQN_DEFAULT_GRAD_CLIP_NORM or 0.0), dest="grad_clip_norm",
+                        help="Max global gradient norm for clipping; <=0 only measures the norm without clipping.")
 
     parser.add_argument("--a3c-workers", type=int, default=A3C_N_WORKERS, dest="a3c_workers",
                         help="A3C only: number of asynchronous actor-learner processes.")

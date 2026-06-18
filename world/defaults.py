@@ -26,6 +26,6 @@ DEFAULT_RAY_STEP: float           = 0.1
 DEFAULT_RANDOM_SEED: int        = 0
 
 # Default reward values (shared pre-assignment spec).
-GOAL_REWARD: float = 3.0
+GOAL_REWARD: float = 1.0
 LIVING_PENALTY: float = -0.01
-COLLISION_PENALTY: float = -0.01
+COLLISION_PENALTY: float = -0.2

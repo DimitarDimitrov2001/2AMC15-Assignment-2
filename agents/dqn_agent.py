@@ -8,9 +8,9 @@ from torch import nn
 import numpy as np
 
 from agents.base_agent import BaseAgent, Transition
-from agents.curiosity import GridCountMotivation, IntrinsicMotivation
+from agents.curiosity import IntrinsicMotivation, NoMotivation
 from agents.replay_buffer import ReplayBuffer, Batch
-from agents.epsilon_schedules import EpsilonSchedule, ConstantEpsilon
+from agents.epsilon_schedules import EpsilonSchedule, LinearEpsilonAnnealing
 from agents.defaults import (
     DQN_N_HIDDEN_NODES,
     DQN_DEFAULT_BATCH_SIZE,
@@ -20,6 +20,8 @@ from agents.defaults import (
     DQN_DEFAULT_UPDATE_FREQ,
     DQN_DEFAULT_TARGET_UPDATE_FREQ,
     DQN_DEFAULT_CHECKPOINT_PATH,
+    DQN_DEFAULT_REWARD_CLIP,
+    DQN_DEFAULT_GRAD_CLIP_NORM,
 )
 from world import BaseGridEnvironment
 
@@ -42,7 +44,12 @@ class DQNAgent(BaseAgent):
     _total_steps: int
     _device: torch.device
     _obs_scale: np.ndarray
+    _angular_indices: np.ndarray
+    _angular_periods: np.ndarray
     _obs_buffer: collections.deque[np.ndarray]
+    _loss_fn: nn.SmoothL1Loss
+    _reward_clip: float | None
+    _grad_clip_norm: float | None
     intrinsic_motivation: IntrinsicMotivation
     # Per-episode intrinsic-bonus accounting (extrinsic return is tracked by the Trainer).
     _episode_intrinsic_reward: float
@@ -62,6 +69,8 @@ class DQNAgent(BaseAgent):
         update_freq: int = DQN_DEFAULT_UPDATE_FREQ,
         target_update_freq: int = DQN_DEFAULT_TARGET_UPDATE_FREQ,
         checkpoint_path: str = DQN_DEFAULT_CHECKPOINT_PATH,
+        reward_clip: float | None = DQN_DEFAULT_REWARD_CLIP,
+        grad_clip_norm: float | None = DQN_DEFAULT_GRAD_CLIP_NORM,
         device: str = "cpu",
     ):
         self.env = env
@@ -71,17 +80,37 @@ class DQNAgent(BaseAgent):
         self.state_dim = self._single_obs_dim * self._no_obs_in_state
         self.gamma = gamma
         self._learning_rate = learning_rate
-        self._device = torch.device(device)
+        self._reward_clip = reward_clip
+        self._grad_clip_norm = grad_clip_norm
+        self._device = self._resolve_device(device)
+        # Seed torch so network init (which happens before the Trainer seeds
+        # torch) is reproducible across runs.
+        torch.manual_seed(seed)
+        if self._device.type == "cuda" and hasattr(torch.cuda, "manual_seed_all"):
+            torch.cuda.manual_seed_all(seed)
+        elif self._device.type == "mps" and hasattr(torch, "mps"):
+            torch.mps.manual_seed(seed)
         obs_high = np.asarray(env.observation_high, dtype=np.float32)
         obs_high = np.where(obs_high == 0.0, 1.0, obs_high)
         # Tile the observation scale to match the stacked state dimension
         single_obs_scale = (1.0 / obs_high).astype(np.float32)
         self._obs_scale = np.tile(single_obs_scale, self._no_obs_in_state)
+        # Angular (periodic) dims, wrapped per stacked frame before scaling.
+        single_angular = np.asarray(env.angular_dims, dtype=np.int64)
+        self._angular_indices = np.concatenate(
+            [single_angular + frame * self._single_obs_dim for frame in range(self._no_obs_in_state)]
+        ).astype(np.int64) if single_angular.size else single_angular
+        self._angular_periods = obs_high[single_angular] if single_angular.size else single_angular.astype(np.float32)
+        self._angular_periods = np.tile(self._angular_periods, self._no_obs_in_state)
         self._update_network = self._build_q_network().to(self._device)
         self._target_network = self._build_q_network().to(self._device)
         self._target_network.load_state_dict(self._update_network.state_dict())
+        # Target net is only used for inference; eval() guards future train/eval
+        # sensitive layers (BatchNorm/Dropout).
+        self._target_network.eval()
         self._optimizer = torch.optim.Adam(self._update_network.parameters(), learning_rate)
-        self.replay_buffer = replay_buffer if replay_buffer is not None else ReplayBuffer(obs_dim=self.state_dim, capacity=replay_buffer_capacity, seed=seed)
+        self._loss_fn = nn.SmoothL1Loss()
+        self.replay_buffer = replay_buffer if replay_buffer is not None else ReplayBuffer(obs_dim=self.state_dim, capacity=replay_buffer_capacity, seed=seed, device=self._device)
         self.batch_size = batch_size
         self._rng = np.random.default_rng(seed)
         self._checkpoint_path = checkpoint_path
@@ -90,33 +119,56 @@ class DQNAgent(BaseAgent):
         self._learn_steps = 0
         self._total_steps = 0
         self._obs_buffer = collections.deque(maxlen=self._no_obs_in_state)
-        self.epsilon_scheduler = epsilon_scheduler if epsilon_scheduler is not None else ConstantEpsilon()
-        self.intrinsic_motivation = intrinsic_motivation if intrinsic_motivation is not None else GridCountMotivation(obs_high[0], obs_high[1])
+        self.epsilon_scheduler = epsilon_scheduler if epsilon_scheduler is not None else LinearEpsilonAnnealing()
+        self.intrinsic_motivation = intrinsic_motivation if intrinsic_motivation is not None else NoMotivation()
         self._episode_intrinsic_reward = 0.0
 
+    @staticmethod
+    def _resolve_device(device: str) -> torch.device:
+        """Resolve a device string, supporting cuda, mps, and cpu.
+
+        ``auto`` picks cuda > mps > cpu; an explicit ``cuda``/``mps`` request
+        raises if that backend is unavailable.
+        """
+        if device == "auto":
+            if torch.cuda.is_available():
+                return torch.device("cuda")
+            if torch.backends.mps.is_available():
+                return torch.device("mps")
+            return torch.device("cpu")
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("CUDA was requested but is not available")
+        if device == "mps" and not torch.backends.mps.is_available():
+            raise ValueError("MPS was requested but is not available")
+        return torch.device(device)
+
     def _build_q_network(self) -> nn.Sequential:
-        net = nn.Sequential(
+        # Plain MLP with PyTorch default (Kaiming) init, matching the converged
+        # baseline. A small-gain output init was tried but suppressed initial Q
+        # magnitudes and stalled learning on the sparse-goal grids.
+        return nn.Sequential(
             nn.Linear(self.state_dim, DQN_N_HIDDEN_NODES),
             nn.ReLU(),
             nn.Linear(DQN_N_HIDDEN_NODES, DQN_N_HIDDEN_NODES),
             nn.ReLU(),
             nn.Linear(DQN_N_HIDDEN_NODES, self.n_actions),
         )
-        # Output layer has no activation, so Kaiming-calibrated weights inflate
-        # initial Q magnitudes. Small-gain orthogonal weights + zero bias keep
-        # all actions equally unbiased before the first gradient step.
-        output_layer: nn.Linear = net[-1]  # type: ignore[assignment]
-        nn.init.orthogonal_(output_layer.weight, gain=0.01)
-        nn.init.zeros_(output_layer.bias)
-        return net
 
     def _preprocess(self, state: np.ndarray) -> np.ndarray:
         """Map a raw (optionally batched) state to the normalized observation phi.
 
-        Broadcasts over the trailing observation dimension, so it handles both a
-        single state of shape ``(state_dim,)`` and a batch ``(B, state_dim)``.
+        Wraps angular dims by their period, scales every dim to roughly [0, 1],
+        and clips to [0, 1]. Broadcasts over the trailing observation dimension,
+        so it handles both a single state ``(state_dim,)`` and a batch
+        ``(B, state_dim)``.
         """
-        return np.asarray(state, dtype=np.float32) * self._obs_scale
+        phi = np.asarray(state, dtype=np.float32)
+        if self._angular_indices.size:
+            phi = phi.copy()
+            phi[..., self._angular_indices] = np.mod(
+                phi[..., self._angular_indices], self._angular_periods
+            )
+        return np.clip(phi * self._obs_scale, 0.0, 1.0)
 
     def _get_phi(self) -> np.ndarray:
         """Get the current stacked state (phi) from the observation buffer."""
@@ -144,8 +196,13 @@ class DQNAgent(BaseAgent):
         phi_t = self._get_phi()
         self._obs_buffer.append(transition.next_state)
         phi_tp1 = self._get_phi()
+        # Clip the extrinsic reward (baseline-style stability) before adding the
+        # intrinsic bonus, so curiosity stays unbounded.
+        extrinsic = transition.reward
+        if self._reward_clip is not None and self._reward_clip > 0:
+            extrinsic = float(np.clip(extrinsic, -self._reward_clip, self._reward_clip))
         bonus = self.intrinsic_motivation.get_bonus_and_update(transition.next_state)
-        reward = transition.reward + bonus
+        reward = extrinsic + bonus
         self._episode_intrinsic_reward += bonus
 
         self.replay_buffer.add(
@@ -173,28 +230,26 @@ class DQNAgent(BaseAgent):
         if not self.replay_buffer.can_sample(self.batch_size):
             return {}
         batch: Batch = self.replay_buffer.sample(self.batch_size)
-        states = torch.as_tensor(batch.states, dtype=torch.float32, device=self._device)
-        actions = torch.as_tensor(batch.actions, dtype=torch.int64, device=self._device).unsqueeze(1)
-        rewards = torch.as_tensor(batch.rewards, dtype=torch.float32, device=self._device)
-        next_states = torch.as_tensor(batch.next_states, dtype=torch.float32, device=self._device)
-        dones = torch.as_tensor(batch.dones, dtype=torch.float32, device=self._device)
+        actions = batch.actions.unsqueeze(1)
 
         # Q(φ_j, ·; θ) for all actions, then the Q of the action actually taken.
-        q_all = self._update_network(states)
+        q_all = self._update_network(batch.states)
         q_pred = q_all.gather(1, actions).squeeze(1)
 
         # y_j: no gradient flows through the target.
         with torch.no_grad():
-            q_next = self._target_network(next_states).max(dim=1).values
-            targets = rewards + self.gamma * q_next * (1.0 - dones)
+            q_next = self._target_network(batch.next_states).max(dim=1).values
+            targets = batch.rewards + self.gamma * q_next * (1.0 - batch.dones)
 
-        loss = torch.nn.functional.mse_loss(q_pred, targets)
+        loss = self._loss_fn(q_pred, targets)
 
         self._optimizer.zero_grad()
         loss.backward()
-        # max_norm=inf measures the gradient norm without actually clipping it.
+        # When grad_clip_norm is None, max_norm=inf measures the gradient norm
+        # without clipping; otherwise it clips to the configured value.
+        max_norm = self._grad_clip_norm if self._grad_clip_norm is not None else float("inf")
         grad_norm = torch.nn.utils.clip_grad_norm_(
-            self._update_network.parameters(), max_norm=float("inf")
+            self._update_network.parameters(), max_norm=max_norm
         )
         self._optimizer.step()
 
