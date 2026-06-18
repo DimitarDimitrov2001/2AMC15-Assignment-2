@@ -60,7 +60,7 @@ DEFAULT_RANDOM_SEED: int        = 0
 # Reward values
 _GOAL_REWARD: float       =  1.0
 _LIVING_PENALTY: float    = -0.01
-_COLLISION_PENALTY: float = -1.0
+_COLLISION_PENALTY: float = -0.2
 
 class ContinuousEnvironment:
     """Continuous grid-world with rotate-then-move actions and distance sensors.
@@ -79,7 +79,7 @@ class ContinuousEnvironment:
         step_size: float = DEFAULT_STEP_SIZE,
         rotation_step: float = DEFAULT_ROTATION_STEP,
         max_sensor_range: float = DEFAULT_MAX_SENSOR_RANGE,
-        action_sigma: float = DEFAULT_ACTION_SIGMA,
+        action_sigma: float | None = None,
         sensory_sigma: float = DEFAULT_SENSORY_SIGMA,
         agent_start_pos: tuple[float, float] | None = None,
         initial_heading: float = DEFAULT_INITIAL_HEADING,
@@ -87,6 +87,7 @@ class ContinuousEnvironment:
         ray_step: float = DEFAULT_RAY_STEP,
         reward_fn: callable | None = None,
         random_seed: int = DEFAULT_RANDOM_SEED,
+        sigma: float | None = None,
     ):
         """
         Args:
@@ -96,7 +97,8 @@ class ContinuousEnvironment:
             max_sensor_range: Maximum distance each ray can travel. If no wall
                               is found within this range the sensor returns
                               max_sensor_range (meaning "clear ahead").
-            sigma:            Probability of a random action replacing the chosen one.
+            action_sigma:     Standard deviation of action noise.
+            sigma:            Backwards-compatible alias for action_sigma.
             agent_start_pos:  Optional fixed (x, y) start position.
             initial_heading:  Starting heading angle in degrees.
             sensor_angles:    Angles at which distance sensors are pointed.
@@ -108,11 +110,14 @@ class ContinuousEnvironment:
         if not Path(grid_fp).exists():
             raise FileNotFoundError(f"Grid file not found: {grid_fp}")
 
+        if action_sigma is None:
+            action_sigma = DEFAULT_ACTION_SIGMA if sigma is None else sigma
+
         self.grid_fp         = Path(grid_fp)
         self.step_size       = step_size
         self.rotation_step   = rotation_step
         self.max_sensor_range = max_sensor_range
-        self.action_sigma    = action_sigma
+        self.action_sigma    = float(action_sigma)
         self.sensory_sigma   = sensory_sigma
         self.agent_start_pos = agent_start_pos
         self.initial_heading = initial_heading

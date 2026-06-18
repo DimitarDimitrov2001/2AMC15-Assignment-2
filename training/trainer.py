@@ -96,6 +96,14 @@ class Trainer:
                     action,
                 )
 
+                if (
+                    _step == self.config.max_steps_per_episode - 1
+                    and not terminated
+                    and not truncated
+                ):
+                    truncated = True
+                    info["time_limit"] = True
+
                 # Make an interaction to be a Transition object
                 transition = Transition(
                     state=state,
@@ -276,12 +284,31 @@ class Trainer:
         reward = metrics.get("train/episode_reward", 0.0)
         length = metrics.get("train/episode_length", 0.0)
 
-        print(
-            f"Episode {episode:5d} | "
-            f"reward={reward:8.3f} | "
-            f"length={length:5.0f} | "
-            f"steps={self.global_step:7d}"
-        )
+        log_parts = [
+            f"Episode {episode:5d}",
+            f"reward={reward:8.3f}",
+            f"length={length:5.0f}",
+            f"steps={self.global_step:7d}",
+        ]
+
+        optional_fields = [
+            ("eps", "update/dqn/epsilon", ".3f"),
+            ("loss", "update/dqn/loss", ".4g"),
+            ("td", "update/dqn/td_error_mean", ".4g"),
+            ("qmax", "update/dqn/q_max", ".3f"),
+            ("buffer", "update/dqn/buffer_size", ".0f"),
+            ("updates", "update/dqn/updates", ".0f"),
+            ("success", "episode_end/success", ".0f"),
+            ("collisions", "episode_end/collisions", ".0f"),
+            ("eval_reward", "eval/mean_reward", ".3f"),
+            ("eval_success", "eval/success_rate", ".3f"),
+        ]
+        for label, key, fmt in optional_fields:
+            value = metrics.get(key)
+            if value is not None:
+                log_parts.append(f"{label}={float(value):{fmt}}")
+
+        print(" | ".join(log_parts))
 
         # Send to W&B if enabled
         if self._wandb is not None:
