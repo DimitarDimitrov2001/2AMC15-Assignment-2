@@ -3,7 +3,6 @@ from typing import Hashable
 import numpy as np
 
 from agents.defaults import (
-    EPSILON_DEFAULT,
     EPSILON_DEFAULT_MAX,
     EPSILON_DEFAULT_MIN,
     EPSILON_DEFAULT_DECAY,
@@ -25,7 +24,7 @@ class EpsilonSchedule(ABC):
         return None
 
 class ConstantEpsilon(EpsilonSchedule):
-    def __init__(self, epsilon: float = EPSILON_DEFAULT) -> None:
+    def __init__(self, epsilon: float = EPSILON_DEFAULT_MAX) -> None:
         super().__init__()
         self._epsilon = epsilon
 

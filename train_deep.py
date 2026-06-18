@@ -5,21 +5,27 @@ agnostic Trainer. Only the random agent is wired today; learning agents
 (DQN, PPO, ...) plug in via the agent factory without touching this script.
 
 Usage:
-    uv run python train_deep.py --env minimal --episodes 20000 --visualize
+    uv run python train_deep.py --env minimal
     uv run python train_deep.py --env continuous --grid grid_configs/small_grid.npy
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 import functools
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
+import re
 
 # Force a headless backend before pyplot is imported (via visualize_random_agent),
 # so periodic in-training rendering never tries to open a GUI window.
 import matplotlib
+import numpy as np
 
 from agents.curiosity import GridCountMotivation, NoMotivation
+from world.defaults import COLLISION_PENALTY, GOAL_REWARD, LIVING_PENALTY
+from world.environment_base import BaseGridEnvironment, RewardFn, cell_index
+from world.grid_codes import TARGET_CELL
 matplotlib.use("Agg")
 
 import torch
@@ -28,16 +34,19 @@ from agents import RandomAgent
 from agents.base_agent import BaseAgent
 from agents.dqn_agent import DQNAgent
 from agents.a3c_agent import A3CAgent
-from agents.epsilon_schedules import ConstantEpsilon, LinearEpsilonAnnealing
+from agents.epsilon_schedules import ConstantEpsilon, EpsilonSchedule, ExponentialEpsilonDecay, LinearEpsilonAnnealing
 from agents.defaults import (
+    A3C_DEFAULT_TOTAL_STEPS,
     CURIOSITY_RESOLUTION_DEFAULT,
-    EPSILON_DEFAULT,
+    EPSILON_DEFAULT_DECAY,
+    EPSILON_DEFAULT_MAX,
     EPSILON_DEFAULT_MIN,
     EPSILON_ANNEAL_DURATION,
     EPSILON_ANNEAL_START_STEP,
     DQN_DEFAULT_GAMMA,
     DQN_DEFAULT_LEARNING_RATE,
     DQN_DEFAULT_BATCH_SIZE,
+    EPSILON_SCHEDULER_DEFAULT,
     REPLAY_DEFAULT_CAPACITY,
     DQN_DEFAULT_NO_OBS_IN_STATE,
     DQN_DEFAULT_UPDATE_FREQ,
@@ -60,15 +69,33 @@ from training.defaults import (
 from world import GRID_CONFIGS_FP, ContinuousEnvironment, MinimalEnvironment
 from visualize_random_agent import visualize_agent
 
-
-# Environments expose a common subset of the interface the Trainer needs.
-EnvType = MinimalEnvironment | ContinuousEnvironment
-
+def _build_reward_fn(
+        target_reward: float,
+        living_penalty: float,
+        collision_penalty: float
+    ) -> RewardFn:
+    def reward_fn(
+        grid: np.ndarray,
+        pos: np.ndarray,
+        new_pos: np.ndarray,
+        collision: bool,
+    ) -> float:
+        """Return the default step reward.
+        """
+        if collision:
+            return collision_penalty
+        i, j = cell_index(new_pos)
+        if grid[i, j] == TARGET_CELL:
+            return target_reward
+        return living_penalty
+    return reward_fn
 
 def _build_env(name: str, grid: Path, seed: int,
                start_pos: tuple[float, float] | None = None,
                use_sensors: bool = True,
-               step_size: float | None = None) -> EnvType:
+               step_size: float | None = None,
+               reward_fn: RewardFn | None = None
+            ) -> BaseGridEnvironment:
     """Construct the requested environment with sensible defaults.
 
     ``use_sensors`` only affects the continuous environment (toggles the
@@ -82,6 +109,7 @@ def _build_env(name: str, grid: Path, seed: int,
             grid_fp=grid,
             agent_start_pos=start_pos,
             random_seed=seed,
+            reward_fn=reward_fn,
             **step_kwargs,
         )
     if name == "continuous":
@@ -90,9 +118,35 @@ def _build_env(name: str, grid: Path, seed: int,
             agent_start_pos=start_pos,
             use_sensors=use_sensors,
             random_seed=seed,
+            reward_fn=reward_fn,
             **step_kwargs,
         )
     raise ValueError(f"Unknown environment: {name}")
+
+def _build_epsilon_schedule(
+        choice: str,
+        epsilon_duration: int,
+        epsilon_start_step: int,
+        epsilon_max: float,
+        epsilon_min: float,
+        decay: float
+    ) -> EpsilonSchedule:
+    """Resolves epsilon schedule method and returns the scheduler"""
+    if choice == "linear_annealing":
+        return LinearEpsilonAnnealing(
+            duration=epsilon_duration,
+            start_step=epsilon_start_step,
+            epsilon_max=epsilon_max,
+            epsilon_min=epsilon_min,
+        ) 
+    elif choice == "exponential_decay":
+        return ExponentialEpsilonDecay(
+            epsilon_max=epsilon_max,
+            epsilon_min=epsilon_min,
+            decay=decay
+        )
+    elif choice == "constant":
+        return ConstantEpsilon(epsilon=epsilon_max)
 
 
 def _resolve_device(choice: str) -> str:
@@ -106,7 +160,7 @@ def _resolve_device(choice: str) -> str:
     return "cpu"
 
 
-def _build_agent(args: Namespace, env: EnvType, device: str) -> BaseAgent:
+def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> BaseAgent:
     """Construct the requested agent.
 
     A registry keyed by ``--agent`` so learning agents drop in later without
@@ -125,12 +179,14 @@ def _build_agent(args: Namespace, env: EnvType, device: str) -> BaseAgent:
             no_obs_in_state=args.stack_size,
             update_freq=args.update_freq,
             target_update_freq=args.target_update_freq,
-            epsilon_scheduler=LinearEpsilonAnnealing(
-                duration=args.epsilon_duration,
-                start_step=args.epsilon_start_step,
-                epsilon_max=args.epsilon,
+            epsilon_scheduler=_build_epsilon_schedule(
+                choice=args.epsilon_schedule,
+                epsilon_max=args.epsilon_max,
                 epsilon_min=args.epsilon_min,
-            ) if args.epsilon_duration > 0 else ConstantEpsilon(args.epsilon),
+                decay=args.decay,
+                epsilon_start_step=args.epsilon_start_step,
+                epsilon_duration=args.epsilon_duration
+            ),
             intrinsic_motivation=GridCountMotivation(
                 max_x=env.observation_high[0],
                 max_y=env.observation_high[1],
@@ -147,7 +203,8 @@ def _build_agent(args: Namespace, env: EnvType, device: str) -> BaseAgent:
                 args.env,
                 args.grid,
                 start_pos=(None if args.exploring_starts
-                           else (tuple(args.start_pos) if args.start_pos is not None else None)),
+                           else (tuple(args.start_pos) if args.start_pos is not None else 
+                                 (tuple(env.agent_start_pos) if env.agent_start_pos is not None else None))),
                 use_sensors=args.use_sensors,
                 step_size=args.step_size,
             ),
@@ -182,7 +239,7 @@ def parse_args() -> Namespace:
                         help="Override the env move/step size (defaults: continuous 0.1, "
                              "minimal 1.0). Larger values mean fewer steps to cross the map, "
                              "so the goal is reachable in a shorter horizon and episodes run faster.")
-    parser.add_argument("--agent", choices=("random", "dqn", "a3c"), default="random",
+    parser.add_argument("--agent", choices=("random", "dqn", "a3c"), default="dqn",
                         help="Agent to train.")
     parser.add_argument("--grid", type=Path, default=GRID_CONFIGS_FP / "small_grid.npy",
                         help="Path to a .npy grid file.")
@@ -191,14 +248,14 @@ def parse_args() -> Namespace:
                         help="Fixed continuous (x, y) start for evaluation and visualization "
                              "(and for training unless --exploring-starts is set). Omit to use "
                              "the grid START_CELL or a random empty cell.")
-    parser.add_argument("--eval-starting-pos", type=float, nargs=2, default=None, dest="eval_start_pos",
+    parser.add_argument("--eval-start-pos", type=float, nargs=2, default=None, dest="eval_start_pos",
                         metavar=("X", "Y"),
                         help="Fixed continuous (x, y) start used only for evaluation and "
                              "visualization. Overrides --start-pos for the eval/viz env; "
                              "training start is unaffected. Omit to fall back to --start-pos.")
     parser.add_argument("--exploring-starts", action="store_true", dest="exploring_starts",
                         help="Use random start positions during training (exploring starts) "
-                             "while evaluation keeps the fixed --start-pos / --eval-starting-pos.")
+                             "while evaluation keeps the fixed --start-pos / --eval-start-pos.")
 
     parser.add_argument("--episodes", type=int, default=DEFAULT_TOTAL_EPISODES, help="Training episodes.")
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS_PER_EPISODE, dest="max_steps",
@@ -212,7 +269,11 @@ def parse_args() -> Namespace:
                         help="Print/log metrics (and rollout image) every N episodes.")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto",
                         help="Compute device; 'auto' picks cuda > mps > cpu.")
-    parser.add_argument("--epsilon", type=float, default=EPSILON_DEFAULT,
+    
+    parser.add_argument("--epsilon-schedule", type=str, default=EPSILON_SCHEDULER_DEFAULT,
+                        choices=("linear_annealing","exponential_decay","constant"),
+                        help="Epsilon scheduler method to control exploration.")
+    parser.add_argument("--epsilon-max", type=float, default=EPSILON_DEFAULT_MAX, dest="epsilon_max",
                         help="Start epsilon for annealing (or fixed rate if duration=0).")
     parser.add_argument("--epsilon-min", type=float, default=EPSILON_DEFAULT_MIN, dest="epsilon_min",
                         help="Minimum epsilon after annealing.")
@@ -220,6 +281,8 @@ def parse_args() -> Namespace:
                         help="Number of steps to anneal epsilon over.")
     parser.add_argument("--epsilon-start-step", type=int, default=EPSILON_ANNEAL_START_STEP, dest="epsilon_start_step",
                         help="Steps before epsilon annealing starts.")
+    parser.add_argument("--epsilon-decay", type=float, default=EPSILON_DEFAULT_DECAY, dest="decay",
+                        help="Decay in case of exponential epsilon scheduling.")
     parser.add_argument("--gamma", type=float, default=DQN_DEFAULT_GAMMA, help="Discount factor.")
     parser.add_argument("--lr", type=float, default=DQN_DEFAULT_LEARNING_RATE, help="Learning rate.")
     parser.add_argument("--batch-size", type=int, default=DQN_DEFAULT_BATCH_SIZE, dest="batch_size", help="Batch size.")
@@ -240,7 +303,7 @@ def parse_args() -> Namespace:
                         help="A3C only: entropy regularization coefficient (uniform across workers).")
     parser.add_argument("--a3c-value-coef", type=float, default=A3C_VALUE_COEF, dest="a3c_value_coef",
                         help="A3C only: weight on the value loss.")
-    parser.add_argument("--a3c-total-steps", type=int, default=None, dest="a3c_total_steps",
+    parser.add_argument("--a3c-total-steps", type=int, default=A3C_DEFAULT_TOTAL_STEPS, dest="a3c_total_steps",
                         help="A3C only: global env-step budget (defaults to episodes * max-steps).")
 
     parser.add_argument("--out-dir", type=Path, default=None, dest="out_dir",
@@ -249,7 +312,7 @@ def parse_args() -> Namespace:
     parser.add_argument("--wandb-group", type=str, default=None, dest="wandb_group",
                         help="W&B group name to bucket related runs under.")
 
-    parser.add_argument("--visualize", action="store_true",
+    parser.add_argument("--no-visualize", action="store_true", dest="no_visualize",
                         help="Save a post-training rollout path image.")
     parser.add_argument("--viz-out", type=Path, default=None, dest="viz_out",
                         help="Visualization output path (defaults under --out-dir or CWD).")
@@ -259,6 +322,12 @@ def parse_args() -> Namespace:
                         help="What intrinsic motivation to use, currently supported: no, grid_count.")
     parser.add_argument("--curiosity-beta", type=float, default=0.5, dest="curiosity_beta",
                         help="Beta value for the curiosity term.")
+    parser.add_argument("--target-reward", type=float, default=GOAL_REWARD, dest="target_reward",
+                        help="Reward for reaching the target.")
+    parser.add_argument("--living-penalty", type=float, default=LIVING_PENALTY, dest="living_penalty",
+                        help="Penalty for taking an action.")
+    parser.add_argument("--collision-penalty", type=float, default=COLLISION_PENALTY, dest="collision_penalty",
+                        help="Penalty for colliding with a wall or obstacle.")
     return parser.parse_args()
 
 
@@ -270,6 +339,9 @@ def _build_config(args: Namespace) -> TrainerConfig:
     # Convert Path objects to strings for W&B logging
     full_config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
 
+    grid_stem = Path(args.grid).stem
+    time = datetime.now().isoformat()
+        
     return TrainerConfig(
         total_episodes=args.episodes,
         max_steps_per_episode=args.max_steps,
@@ -283,7 +355,7 @@ def _build_config(args: Namespace) -> TrainerConfig:
         history_path=history_path,
         use_wandb=args.wandb,
         wandb_group=args.wandb_group,
-        run_name=f"{args.agent}_{args.env}",
+        run_name=f"{args.agent}_{args.env}_{grid_stem}_{time}",
         full_config=full_config,
     )
 
@@ -303,8 +375,8 @@ def main() -> None:
     # --eval-starting-pos overrides the eval/viz start independently of training.
     eval_start = tuple(args.eval_start_pos) if args.eval_start_pos is not None else base_start
     train_start = None if args.exploring_starts else base_start
-
-    env = _build_env(args.env, args.grid, args.seed, train_start, args.use_sensors, args.step_size)
+    reward_fn = _build_reward_fn(args.target_reward, args.living_penalty, args.collision_penalty)
+    env = _build_env(args.env, args.grid, args.seed, train_start, args.use_sensors, args.step_size, reward_fn)
     eval_env = _build_env(args.env, args.grid, args.seed, eval_start, args.use_sensors, args.step_size)
     agent = _build_agent(args, env, device)
     config = _build_config(args)
@@ -315,13 +387,13 @@ def main() -> None:
           f"eval_start={'random' if eval_start is None else eval_start}")
 
     viz_fn = None
-    if args.visualize:
+    if not args.no_visualize:
         viz_env = _build_env(args.env, args.grid, args.seed, eval_start, args.use_sensors, args.step_size)
         rollout_dir = (args.out_dir if args.out_dir is not None else Path(".")) / "rollouts"
         rollout_dir.mkdir(parents=True, exist_ok=True)
 
         def viz_fn(rollout_agent: BaseAgent, episode: int,
-                   _env: EnvType = viz_env, _dir: Path = rollout_dir) -> str:
+                   _env: BaseGridEnvironment = viz_env, _dir: Path = rollout_dir) -> str:
             out = _dir / f"ep_{episode:06d}.png"
             return str(visualize_agent(
                 _env, rollout_agent, max_steps=args.viz_max_steps, out=out,
@@ -335,7 +407,7 @@ def main() -> None:
     if history:
         print(f"Last episode metrics: {history[-1]}")
 
-    if args.visualize:
+    if not args.no_visualize:
         viz_out = args.viz_out
         if viz_out is None:
             base = args.out_dir if args.out_dir is not None else Path(".")
