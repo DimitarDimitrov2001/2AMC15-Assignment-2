@@ -427,16 +427,35 @@ class Trainer:
             metrics.get("charts/random_action_prob", metrics.get("charts/entropy", float("nan"))),
         )
 
-        print(
-            f"Episode {episode:5d} | "
-            f"reward={reward:8.3f} | "
-            f"len={length:5.1f} | "
-            f"term_rate={term_rate:4.2f} | "
-            f"loss={loss:8.4f} | "
-            f"value={q_value:7.3f} | "
-            f"explore={exploration:4.2f} | "
-            f"steps={self.global_step:7d}"
-        )
+        log_parts = [
+            f"Episode {episode:5d}",
+            f"reward={reward:8.3f}",
+            f"len={length:5.1f}",
+            f"term_rate={term_rate:4.2f}",
+            f"loss={loss:8.4f}",
+            f"value={q_value:7.3f}",
+            f"explore={exploration:4.2f}",
+            f"steps={self.global_step:7d}",
+        ]
+
+        optional_fields = [
+            ("dqn_eps", "dqn/epsilon", ".3f"),
+            ("dqn_loss", "dqn/loss", ".4g"),
+            ("dqn_td", "dqn/td_error_mean", ".4g"),
+            ("dqn_qmax", "dqn/q_max", ".3f"),
+            ("buffer", "dqn/buffer_size", ".0f"),
+            ("updates", "dqn/updates", ".0f"),
+            ("success", "success", ".0f"),
+            ("collisions", "collisions", ".0f"),
+            ("eval_reward", "eval/mean_reward", ".3f"),
+            ("eval_success", "eval/success_rate", ".3f"),
+        ]
+        for label, key, fmt in optional_fields:
+            value = metrics.get(key)
+            if value is not None:
+                log_parts.append(f"{label}={float(value):{fmt}}")
+
+        print(" | ".join(log_parts))
 
         # Send to W&B if enabled
         if self._wandb is not None:
