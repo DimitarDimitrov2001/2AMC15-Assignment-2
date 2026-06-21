@@ -67,7 +67,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         step_size: float = DEFAULT_STEP_SIZE,
         rotation_step: float = DEFAULT_ROTATION_STEP,
         max_sensor_range: float = DEFAULT_MAX_SENSOR_RANGE,
-        action_sigma: float = DEFAULT_ACTION_SIGMA,
+        action_sigma: float | None = None,
         sensory_sigma: float = DEFAULT_SENSORY_SIGMA,
         agent_start_pos: tuple[float, float] | None = None,
         initial_heading: float = DEFAULT_INITIAL_HEADING,
@@ -76,6 +76,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         use_sensors: bool = True,
         reward_fn: RewardFn | None = None,
         random_seed: int = DEFAULT_RANDOM_SEED,
+        sigma: float | None = None,
     ) -> None:
         """
         Args:
@@ -87,6 +88,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
                               max_sensor_range (meaning "clear ahead").
             action_sigma:     Std-dev of Gaussian noise added to actions.
             sensory_sigma:    Std-dev of Gaussian noise added to sensor readings.
+            sigma:            Backwards-compatible alias for action_sigma.
             agent_start_pos:  Optional fixed (x, y) start position.
             initial_heading:  Starting heading angle in degrees.
             sensor_angles:    Angles at which distance sensors are pointed.
@@ -98,6 +100,9 @@ class ContinuousEnvironment(BaseGridEnvironment):
                                 fn(grid, pos, new_pos, collision) -> float
             random_seed:      Seed for the internal RNG.
         """
+        if action_sigma is None:
+            action_sigma = DEFAULT_ACTION_SIGMA if sigma is None else sigma
+
         super().__init__(
             grid_fp,
             step_size=step_size,
@@ -107,7 +112,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         )
         self.rotation_step = rotation_step
         self.max_sensor_range = max_sensor_range
-        self.action_sigma = action_sigma
+        self.action_sigma = float(action_sigma)
         self.sensory_sigma = sensory_sigma
         self.initial_heading = initial_heading
         self.sensor_angles = sensor_angles
