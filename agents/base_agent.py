@@ -24,6 +24,12 @@ class Transition:
 
 class BaseAgent(ABC):
     # Base interface for all agents. Trainer only knows this interface
+
+    # When True, the agent owns its training loop (e.g. A3C's multi-process
+    # actor-learners) and the Trainer delegates to ``train_iter`` instead of the
+    # single-environment select/observe/update loop.
+    trains_externally: bool = False
+
     @abstractmethod
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
         # Choose one discrete action
@@ -44,3 +50,11 @@ class BaseAgent(ABC):
     def on_episode_end(self, episode: int, episode_metrics: dict[str, float]) -> dict[str, float]:
         # Option to do something at the end of each episode
         return {}
+
+    def save_checkpoint(self, path: str) -> None:
+        # Persist agent state (e.g. network weights). No-op for stateless agents.
+        return None
+
+    def load_checkpoint(self, path: str) -> None:
+        # Restore agent state from a checkpoint. No-op for stateless agents.
+        return None
