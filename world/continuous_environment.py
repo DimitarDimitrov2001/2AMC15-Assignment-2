@@ -209,6 +209,11 @@ class ContinuousEnvironment(BaseGridEnvironment):
             bounds.extend([float(self.max_sensor_range)] * len(self.sensor_angles))
         return np.array(bounds, dtype=np.float32)
 
+    @property
+    def angular_dims(self) -> tuple[int, ...]:
+        """theta is the heading angle (index 2) in the [x, y, theta, ...] state."""
+        return (2,)
+
     # ------------------------------------------------------------------
     # Reset hooks
     # ------------------------------------------------------------------
