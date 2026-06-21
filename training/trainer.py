@@ -119,6 +119,16 @@ class Trainer:
                     action,
                 )
 
+                # Treat the step-budget timeout as a truncation so the agent can
+                # ground its TD targets (done=True)
+                if (
+                    _step == self.config.max_steps_per_episode - 1
+                    and not terminated
+                    and not truncated
+                ):
+                    truncated = True
+                    info["time_limit"] = True
+
                 # Make an interaction to be a Transition object
                 transition = Transition(
                     state=state,
@@ -191,8 +201,10 @@ class Trainer:
         if self.config.history_path is not None:
             self.save_history(self.config.history_path)
 
-        # Close W&B if used
-        self._finish_wandb()
+        # Some entry points generate and log post-training artifacts after
+        # train() returns, so they keep the run open and finish it themselves.
+        if self.config.finish_wandb_on_train_end:
+            self._finish_wandb()
         return self.history
 
     def _train_external(self) -> list[dict[str, float]]:
@@ -231,7 +243,8 @@ class Trainer:
         if self.config.history_path is not None:
             self.save_history(self.config.history_path)
 
-        self._finish_wandb()
+        if self.config.finish_wandb_on_train_end:
+            self._finish_wandb()
         return self.history
 
     def _maybe_log_rollout(self, episode: int) -> None:
@@ -403,8 +416,16 @@ class Trainer:
         if not np.isfinite(loss):
             loss = self._window_mean(window, "losses/policy_loss")
         q_value = self._window_mean(window, "qvals/q_taken")
-        # Epsilon is a schedule value, not a noisy sample, so report the latest.
-        epsilon = metrics.get("charts/epsilon", float("nan"))
+        if not np.isfinite(q_value):
+            q_value = self._window_mean(window, "qvals/state_value")
+        if not np.isfinite(q_value):
+            q_value = self._window_mean(window, "qvals/returns")
+        # DQN reports epsilon; A3C reports explicit random-action probability
+        # plus entropy. Prefer the action probability for terminal readability.
+        exploration = metrics.get(
+            "charts/epsilon",
+            metrics.get("charts/random_action_prob", metrics.get("charts/entropy", float("nan"))),
+        )
 
         print(
             f"Episode {episode:5d} | "
@@ -412,8 +433,8 @@ class Trainer:
             f"len={length:5.1f} | "
             f"term_rate={term_rate:4.2f} | "
             f"loss={loss:8.4f} | "
-            f"q={q_value:7.3f} | "
-            f"eps={epsilon:4.2f} | "
+            f"value={q_value:7.3f} | "
+            f"explore={exploration:4.2f} | "
             f"steps={self.global_step:7d}"
         )
 
@@ -462,6 +483,10 @@ class Trainer:
     def _finish_wandb(self) -> None:
         if self._wandb is not None:
             self._wandb.finish()
+
+    def finish_wandb(self) -> None:
+        """Finish the active W&B run, if one was started."""
+        self._finish_wandb()
 
     @staticmethod
     def _set_seed(seed: int) -> None:

@@ -2,7 +2,7 @@
 
 The buffer is a reusable component owned by the agent (e.g. DQN), not the
 Trainer. It stores transitions in preallocated numpy ring buffers and samples
-uniform random minibatches for learning updates.
+uniform random minibatches as torch tensors placed on the configured device.
 """
 
 from __future__ import annotations
@@ -10,19 +10,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
 from agents.base_agent import Transition
 from agents.defaults import REPLAY_DEFAULT_CAPACITY, REPLAY_DEFAULT_START_SIZE
 
 @dataclass(frozen=True)
 class Batch:
-    """A sampled minibatch of transitions as stacked numpy arrays."""
+    """A sampled minibatch of transitions as device-placed torch tensors."""
 
-    states: np.ndarray      # (batch, obs_dim)
-    actions: np.ndarray     # (batch,) int64
-    rewards: np.ndarray     # (batch,) float32
-    next_states: np.ndarray  # (batch, obs_dim) float32
-    dones: np.ndarray       # (batch,) bool
+    states: torch.Tensor       # (batch, obs_dim) float32
+    actions: torch.Tensor      # (batch,) int64
+    rewards: torch.Tensor      # (batch,) float32
+    next_states: torch.Tensor  # (batch, obs_dim) float32
+    dones: torch.Tensor        # (batch,) float32
 
 
 class ReplayBuffer:
@@ -37,6 +38,7 @@ class ReplayBuffer:
     _capacity: int
     _replay_start_size: int
     _obs_dim: int
+    _device: torch.device
     _rng: np.random.Generator
     _states: np.ndarray
     _next_states: np.ndarray
@@ -52,13 +54,16 @@ class ReplayBuffer:
         capacity: int | None = None,
         replay_start_size: int | None = None,
         seed: int | None = None,
+        device: torch.device | str = "cpu",
     ) -> None:
         """Create an empty buffer.
 
         Args:
             obs_dim: Length of the (flat) state vector.
             capacity: Maximum number of transitions retained.
+            replay_start_size: Minimum fill before sampling is allowed.
             seed: Optional seed for reproducible sampling.
+            device: Device that sampled tensors are placed on.
         """
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
@@ -69,13 +74,14 @@ class ReplayBuffer:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
         self._obs_dim = obs_dim
+        self._device = torch.device(device)
         self._rng = np.random.default_rng(seed)
 
         self._states = np.zeros((self._capacity, obs_dim), dtype=np.float32)
-        self._next_states = np.zeros((capacity, obs_dim), dtype=np.float32)
-        self._actions = np.zeros(capacity, dtype=np.int64)
-        self._rewards = np.zeros(capacity, dtype=np.float32)
-        self._dones = np.zeros(capacity, dtype=np.bool_)
+        self._next_states = np.zeros((self._capacity, obs_dim), dtype=np.float32)
+        self._actions = np.zeros(self._capacity, dtype=np.int64)
+        self._rewards = np.zeros(self._capacity, dtype=np.float32)
+        self._dones = np.zeros(self._capacity, dtype=np.float32)
 
         self._size = 0
         self._next_idx = 0
@@ -89,12 +95,21 @@ class ReplayBuffer:
         done: bool,
     ) -> None:
         """Store a single transition, overwriting the oldest when full."""
+        state_arr = np.asarray(state, dtype=np.float32)
+        next_state_arr = np.asarray(next_state, dtype=np.float32)
+        if state_arr.shape != (self._obs_dim,):
+            raise ValueError(f"state must have shape ({self._obs_dim},), got {state_arr.shape}")
+        if next_state_arr.shape != (self._obs_dim,):
+            raise ValueError(
+                f"next_state must have shape ({self._obs_dim},), got {next_state_arr.shape}"
+            )
+
         idx = self._next_idx
-        self._states[idx] = state
-        self._next_states[idx] = next_state
+        self._states[idx] = state_arr
+        self._next_states[idx] = next_state_arr
         self._actions[idx] = action
         self._rewards[idx] = reward
-        self._dones[idx] = done
+        self._dones[idx] = float(done)
 
         self._next_idx = (idx + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
@@ -116,7 +131,7 @@ class ReplayBuffer:
             batch_size: Number of transitions to draw.
 
         Returns:
-            A :class:`Batch` of stacked numpy arrays.
+            A :class:`Batch` of torch tensors placed on the buffer's device.
 
         Raises:
             ValueError: If fewer than ``batch_size`` transitions are stored.
@@ -130,11 +145,13 @@ class ReplayBuffer:
 
         indices = self._rng.choice(self._size, size=batch_size, replace=False)
         return Batch(
-            states=self._states[indices],
-            actions=self._actions[indices],
-            rewards=self._rewards[indices],
-            next_states=self._next_states[indices],
-            dones=self._dones[indices],
+            states=torch.as_tensor(self._states[indices], dtype=torch.float32, device=self._device),
+            actions=torch.as_tensor(self._actions[indices], dtype=torch.int64, device=self._device),
+            rewards=torch.as_tensor(self._rewards[indices], dtype=torch.float32, device=self._device),
+            next_states=torch.as_tensor(
+                self._next_states[indices], dtype=torch.float32, device=self._device
+            ),
+            dones=torch.as_tensor(self._dones[indices], dtype=torch.float32, device=self._device),
         )
 
     def can_sample(self, batch_size: int) -> bool:
