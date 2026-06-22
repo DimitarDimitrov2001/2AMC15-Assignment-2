@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 from string import Template
@@ -84,10 +83,20 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
     }
     .controls {
       display: grid;
-      grid-template-columns: auto auto 1fr auto;
+      grid-template-columns: auto auto 1fr auto auto;
       gap: 10px;
       align-items: center;
       margin-top: 12px;
+    }
+    select {
+      min-width: 120px;
+      height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      padding: 0 8px;
     }
     button {
       min-width: 42px;
@@ -140,6 +149,7 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
         <button id="prev" type="button" title="Previous step">&lt;</button>
         <button id="play" type="button" title="Play or pause">Play</button>
         <input id="slider" type="range" min="0" value="0" step="1">
+        <select id="run-select" aria-label="Select rollout run" hidden></select>
         <output id="step-readout" class="step-readout">0 / 0</output>
       </div>
     </section>
@@ -163,6 +173,7 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
     const slider = document.getElementById("slider");
     const playButton = document.getElementById("play");
     const prevButton = document.getElementById("prev");
+    const runSelect = document.getElementById("run-select");
     const stepReadout = document.getElementById("step-readout");
     const actionText = document.getElementById("action");
     const rewardText = document.getElementById("reward");
@@ -174,18 +185,25 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
     const NS = "http://www.w3.org/2000/svg";
     const actionNames = ["rotate_left", "rotate_right", "move_forward"];
     const cellColors = {0: "#f0f0ec", 1: "#2b2b2b", 2: "#7a7a7a", 3: "#2f8f2f", 4: "#f0f0ec"};
-    const maxStep = Math.max(0, data.positions.length - 1);
+    const pathColors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+      "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"];
+    const runs = Array.isArray(data.runs) ? data.runs : [data];
+    let selectedRun = 0;
+    let activeRun = runs[selectedRun];
+    let maxStep = Math.max(0, activeRun.positions.length - 1);
     let currentStep = 0;
     let timer = null;
     slider.max = String(maxStep);
+    // Axis convention: x = col (right), y = row (down). SVG y grows downward, so row 0
+    // is at the top — same top-left origin as numpy grid[col, row] and rl_plots.
     svg.setAttribute("viewBox", "-0.5 -0.5 " + data.n_cols + " " + data.n_rows);
     function svgElement(name, attrs) {
       const node = document.createElementNS(NS, name);
       for (const key in attrs) node.setAttribute(key, attrs[key]);
       return node;
     }
-    function plotPoint(step) {
-      const position = data.positions[step];
+    function plotPoint(run, step) {
+      const position = run.positions[step];
       return [position[0] - 0.5, position[1] - 0.5];
     }
     function drawBackground() {
@@ -200,23 +218,56 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
       }
     }
     drawBackground();
+    const backgroundPaths = svgElement("g", {id: "background-paths"});
+    svg.appendChild(backgroundPaths);
+    function drawStaticPaths() {
+      while (backgroundPaths.firstChild) backgroundPaths.removeChild(backgroundPaths.firstChild);
+      runs.forEach((run, index) => {
+        const points = [];
+        for (let i = 0; i < run.positions.length; i += 1) {
+          const point = plotPoint(run, i);
+          points.push(point[0] + "," + point[1]);
+        }
+        backgroundPaths.appendChild(svgElement("polyline", {
+          fill: "none",
+          stroke: pathColors[index % pathColors.length],
+          "stroke-width": "0.06",
+          opacity: runs.length > 1 ? "0.35" : "0",
+          points: points.join(" ")
+        }));
+      });
+    }
+    drawStaticPaths();
     const pathLine = svgElement("polyline", {
       fill: "none", stroke: "#1f77b4", "stroke-width": "0.075",
       "stroke-linecap": "round", "stroke-linejoin": "round"
     });
     svg.appendChild(pathLine);
-    const start = plotPoint(0);
-    const startCircle = svgElement("circle", {
-      cx: start[0], cy: start[1], r: "0.34", fill: "#e8c13a",
-      stroke: "black", "stroke-width": "0.05"
-    });
-    svg.appendChild(startCircle);
-    const startText = svgElement("text", {
-      x: start[0], y: start[1] + 0.08, "text-anchor": "middle",
-      "font-size": "0.28", "font-weight": "700", fill: "black"
-    });
-    startText.textContent = "S";
-    svg.appendChild(startText);
+    const startMarkers = svgElement("g", {id: "start-markers"});
+    svg.appendChild(startMarkers);
+    function drawStartMarkers() {
+      while (startMarkers.firstChild) startMarkers.removeChild(startMarkers.firstChild);
+      runs.forEach((run, index) => {
+        const start = plotPoint(run, 0);
+        startMarkers.appendChild(svgElement("circle", {
+          cx: start[0], cy: start[1], r: "0.22",
+          fill: pathColors[index % pathColors.length],
+          stroke: "black", "stroke-width": "0.04", opacity: "0.55"
+        }));
+      });
+      const activeStart = plotPoint(activeRun, 0);
+      startMarkers.appendChild(svgElement("circle", {
+        cx: activeStart[0], cy: activeStart[1], r: "0.34", fill: "#e8c13a",
+        stroke: "black", "stroke-width": "0.05"
+      }));
+      const startText = svgElement("text", {
+        x: activeStart[0], y: activeStart[1] + 0.08, "text-anchor": "middle",
+        "font-size": "0.28", "font-weight": "700", fill: "black"
+      });
+      startText.textContent = "S";
+      startMarkers.appendChild(startText);
+    }
+    drawStartMarkers();
     const headingLine = svgElement("line", {
       stroke: "#d98400", "stroke-width": "0.09", "stroke-linecap": "round"
     });
@@ -227,24 +278,49 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
     svg.appendChild(headingLine);
     svg.appendChild(headingTip);
     svg.appendChild(agentCircle);
-    function cumulativeReward(step) {
+    function populateRunSelect() {
+      if (runs.length <= 1) {
+        runSelect.hidden = true;
+        return;
+      }
+      runSelect.hidden = false;
+      runSelect.innerHTML = "";
+      runs.forEach((run, index) => {
+        const option = document.createElement("option");
+        option.value = String(index);
+        option.textContent = "Run " + (index + 1) + " (seed " + (run.rollout_seed ?? "?") + ")";
+        runSelect.appendChild(option);
+      });
+      runSelect.value = "0";
+    }
+    populateRunSelect();
+    function cumulativeReward(run, step) {
       let total = 0;
-      for (let i = 0; i < step; i += 1) total += Number(data.rewards[i] || 0);
+      for (let i = 0; i < step; i += 1) total += Number(run.rewards[i] || 0);
       return total;
     }
     function formatNumber(value) { return Number(value).toFixed(3); }
+    function setActiveRun(index) {
+      selectedRun = Math.max(0, Math.min(runs.length - 1, index));
+      activeRun = runs[selectedRun];
+      maxStep = Math.max(0, activeRun.positions.length - 1);
+      slider.max = String(maxStep);
+      pathLine.setAttribute("stroke", pathColors[selectedRun % pathColors.length]);
+      drawStartMarkers();
+      render(0);
+    }
     function render(step) {
       currentStep = Math.max(0, Math.min(maxStep, step));
       slider.value = String(currentStep);
       stepReadout.textContent = currentStep + " / " + maxStep;
       const points = [];
       for (let i = 0; i <= currentStep; i += 1) {
-        const point = plotPoint(i);
+        const point = plotPoint(activeRun, i);
         points.push(point[0] + "," + point[1]);
       }
       pathLine.setAttribute("points", points.join(" "));
-      const current = plotPoint(currentStep);
-      const heading = Number(data.headings[currentStep] || 0);
+      const current = plotPoint(activeRun, currentStep);
+      const heading = Number(activeRun.headings[currentStep] || 0);
       const radians = heading * Math.PI / 180;
       const hx = current[0] + Math.cos(radians) * 0.45;
       const hy = current[1] + Math.sin(radians) * 0.45;
@@ -256,17 +332,17 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
       headingLine.setAttribute("y2", hy);
       headingTip.setAttribute("cx", hx);
       headingTip.setAttribute("cy", hy);
-      const actionIndex = currentStep > 0 ? data.actions[currentStep - 1] : null;
-      const reward = currentStep > 0 ? Number(data.rewards[currentStep - 1] || 0) : 0;
-      const info = currentStep > 0 ? data.infos?.[currentStep - 1] || {} : {};
-      const rawPosition = data.positions[currentStep];
+      const actionIndex = currentStep > 0 ? activeRun.actions[currentStep - 1] : null;
+      const reward = currentStep > 0 ? Number(activeRun.rewards[currentStep - 1] || 0) : 0;
+      const info = currentStep > 0 ? activeRun.infos?.[currentStep - 1] || {} : {};
+      const rawPosition = activeRun.positions[currentStep];
       actionText.textContent = actionIndex === null ? "start" : actionNames[actionIndex] || String(actionIndex);
       rewardText.textContent = formatNumber(reward);
-      totalText.textContent = formatNumber(cumulativeReward(currentStep));
+      totalText.textContent = formatNumber(cumulativeReward(activeRun, currentStep));
       positionText.textContent = "(" + formatNumber(rawPosition[0]) + ", " + formatNumber(rawPosition[1]) + ")";
       headingText.textContent = formatNumber(heading);
       collisionText.textContent = String(Boolean(info.collision));
-      successText.textContent = String(Boolean(info.success || (currentStep === maxStep && data.success)));
+      successText.textContent = String(Boolean(info.success || (currentStep === maxStep && activeRun.success)));
     }
     function stop() {
       if (timer !== null) {
@@ -292,6 +368,7 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
     playButton.addEventListener("click", play);
     prevButton.addEventListener("click", () => { stop(); render(currentStep - 1); });
     slider.addEventListener("input", () => { stop(); render(Number(slider.value)); });
+    runSelect.addEventListener("change", () => { stop(); setActiveRun(Number(runSelect.value)); });
     document.addEventListener("keydown", (event) => {
       if (event.key === "ArrowLeft") {
         stop();
@@ -311,11 +388,39 @@ _ROLLOUT_HTML_TEMPLATE = """<!doctype html>
 """
 
 
-def write_json(path: Path, payload: dict) -> None:
+def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
     """Write a JSON payload, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(_json_safe(payload), f, indent=2)
+
+
+def aggregate_rollout_metrics(rollouts: list[dict[str, Any]]) -> dict[str, float]:
+    """Return aggregate greedy-rollout metrics over multiple seeded runs."""
+    rewards = [float(rollout["total_reward"]) for rollout in rollouts]
+    steps = [float(rollout["steps"]) for rollout in rollouts]
+    successes = [1.0 if rollout.get("success") else 0.0 for rollout in rollouts]
+    n_runs = len(rollouts)
+    mean_reward = float(np.mean(rewards)) if rewards else 0.0
+    std_reward = float(np.std(rewards)) if rewards else 0.0
+    return {
+        "n_runs": float(n_runs),
+        "mean_reward": mean_reward,
+        "std_reward": std_reward,
+        "success_rate": float(np.mean(successes)) if successes else 0.0,
+        "mean_steps": float(np.mean(steps)) if steps else 0.0,
+    }
+
+
+def _normalize_rollouts(
+    rollout: dict[str, Any] | list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Return a rollout list or ``None`` when no rollout artifacts should be written."""
+    if rollout is None:
+        return None
+    if isinstance(rollout, list):
+        return rollout
+    return [rollout]
 
 
 def save_deep_rl_run_artifacts(
@@ -323,7 +428,7 @@ def save_deep_rl_run_artifacts(
     run_config: dict[str, Any],
     history: list[dict[str, float]],
     agent: BaseAgent,
-    rollout: dict[str, Any] | None = None,
+    rollout: dict[str, Any] | list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Save training curves, config, metrics, and optional greedy-rollout artifacts.
 
@@ -332,30 +437,34 @@ def save_deep_rl_run_artifacts(
         run_config: JSON-serializable run configuration.
         history: Per-episode trainer metrics.
         agent: Trained agent used for the evaluation summary.
-        rollout: Optional greedy rollout generated from the checkpointed policy.
+        rollout: Optional greedy rollout or list of rollouts from the checkpointed policy.
 
     Returns:
         Paths written by this function.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    rollouts = _normalize_rollouts(rollout)
     paths = [
         out_dir / "config.json",
-        out_dir / "metrics.csv",
         out_dir / "training_curves.png",
         out_dir / "evaluation_summary.txt",
     ]
     write_json(paths[0], run_config)
-    _write_metrics_csv(paths[1], history)
-    _write_deep_training_curves(paths[2], history)
-    _write_deep_evaluation_summary(paths[3], history, agent)
+    _write_deep_training_curves(paths[1], history)
+    _write_deep_evaluation_summary(paths[2], history, agent, rollouts=rollouts)
 
-    if rollout is not None:
+    if rollouts is not None:
         rollout_json = out_dir / "policy_rollout.json"
         rollout_png = out_dir / "policy_rollout.png"
         rollout_html = out_dir / "policy_rollout.html"
-        write_json(rollout_json, dict(rollout))
-        _write_policy_rollout_plot(rollout_png, rollout)
-        _write_policy_rollout_html(rollout_html, rollout)
+        json_payload: dict[str, Any] | list[dict[str, Any]]
+        if len(rollouts) == 1:
+            json_payload = dict(rollouts[0])
+        else:
+            json_payload = [dict(item) for item in rollouts]
+        write_json(rollout_json, json_payload)
+        _write_policy_rollout_plot(rollout_png, rollouts)
+        _write_policy_rollout_html(rollout_html, rollouts)
         paths.extend([rollout_json, rollout_png, rollout_html])
 
     return paths
@@ -517,16 +626,6 @@ def save_policy_disagreement_artifact(
     plt.close(fig)
 
 
-def _write_metrics_csv(path: Path, history: list[dict[str, float]]) -> None:
-    """Write per-episode metrics to CSV."""
-    fieldnames = sorted({key for row in history for key in row})
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in history:
-            writer.writerow(row)
-
-
 def _write_deep_training_curves(path: Path, history: list[dict[str, float]]) -> None:
     """Write the core deep-RL training curves."""
     fig, axes = plt.subplots(2, 2, figsize=(11, 8))
@@ -540,10 +639,31 @@ def _write_deep_training_curves(path: Path, history: list[dict[str, float]]) -> 
     plt.close(fig)
 
 
-def _write_policy_rollout_plot(path: Path, rollout: dict[str, Any]) -> None:
-    """Write a static PNG of a greedy policy rollout."""
-    grid = np.asarray(rollout["grid"])
-    positions = np.asarray(rollout["positions"], dtype=float) - 0.5
+_ROLLOUT_PATH_COLORS = (
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+)
+
+
+def _write_policy_rollout_plot(
+    path: Path,
+    rollout: dict[str, Any] | list[dict[str, Any]],
+) -> None:
+    """Write a static PNG of one or more greedy policy rollouts."""
+    rollouts = rollout if isinstance(rollout, list) else [rollout]
+    multi = len(rollouts) > 1
+    grid = np.asarray(rollouts[0]["grid"])
+    positions_list = [
+        np.asarray(item["positions"], dtype=float) - 0.5 for item in rollouts
+    ]
     n_cols, n_rows = grid.shape
 
     fig, ax = plt.subplots(
@@ -552,11 +672,16 @@ def _write_policy_rollout_plot(path: Path, rollout: dict[str, Any]) -> None:
     )
     _draw_grid_background(ax, grid)
 
-    if len(positions) > 0:
+    path_alpha = 0.35 if multi else 1.0
+    for index, positions in enumerate(positions_list):
+        color = _ROLLOUT_PATH_COLORS[index % len(_ROLLOUT_PATH_COLORS)]
+        if len(positions) == 0:
+            continue
         ax.plot(
             positions[:, 0],
             positions[:, 1],
-            color="#1f77b4",
+            color=color,
+            alpha=path_alpha,
             linewidth=2,
             marker="o",
             markersize=3,
@@ -566,77 +691,108 @@ def _write_policy_rollout_plot(path: Path, rollout: dict[str, Any]) -> None:
         start_circle = plt.Circle(
             (start_col, start_row),
             0.35,
-            facecolor="#E8C13A",
+            facecolor="#E8C13A" if not multi else color,
             edgecolor="black",
             linewidth=1.5,
+            alpha=0.9 if multi else 1.0,
             zorder=4,
         )
         ax.add_patch(start_circle)
-        ax.text(
-            start_col,
-            start_row,
-            "S",
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontweight="bold",
-            color="black",
-            zorder=5,
-        )
+        if not multi:
+            ax.text(
+                start_col,
+                start_row,
+                "S",
+                ha="center",
+                va="center",
+                fontsize=7,
+                fontweight="bold",
+                color="black",
+                zorder=5,
+            )
         ax.scatter(
             positions[-1, 0],
             positions[-1, 1],
-            color="#d62728",
-            s=90,
+            color=color,
+            s=70 if multi else 90,
             marker="X",
             edgecolors="black",
+            alpha=0.9,
             zorder=5,
         )
 
-    ax.set_title(
-        "Greedy policy rollout "
-        f"(steps={rollout['steps']}, reward={rollout['total_reward']:.3f}, "
-        f"success={rollout['success']})"
-    )
+    if multi:
+        aggregate = aggregate_rollout_metrics(rollouts)
+        title = (
+            "Greedy policy rollouts "
+            f"(runs={int(aggregate['n_runs'])}, "
+            f"mean_reward={aggregate['mean_reward']:.3f}, "
+            f"success_rate={aggregate['success_rate']:.3f})"
+        )
+    else:
+        single = rollouts[0]
+        title = (
+            "Greedy policy rollout "
+            f"(steps={single['steps']}, reward={single['total_reward']:.3f}, "
+            f"success={single['success']})"
+        )
+    ax.set_title(title)
     _configure_grid_axes(ax, n_cols, n_rows)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
-def _write_policy_rollout_html(path: Path, rollout: dict[str, Any]) -> None:
+def _write_policy_rollout_html(
+    path: Path,
+    rollout: dict[str, Any] | list[dict[str, Any]],
+) -> None:
     """Write an interactive HTML rollout viewer."""
-    payload = _html_rollout_payload(rollout)
+    rollouts = rollout if isinstance(rollout, list) else [rollout]
+    payload = _html_rollout_payload(rollouts)
     data_json = json.dumps(_json_safe(payload), separators=(",", ":")).replace("</", "<\\/")
     html = Template(_ROLLOUT_HTML_TEMPLATE).substitute(payload=data_json)
     with path.open("w", encoding="utf-8") as f:
         f.write(html)
 
 
-def _html_rollout_payload(rollout: dict[str, Any]) -> dict[str, Any]:
+def _html_rollout_payload(rollouts: list[dict[str, Any]]) -> dict[str, Any]:
     """Return the compact payload consumed by the HTML viewer."""
-    grid = np.asarray(rollout["grid"])
-    positions = np.asarray(rollout["positions"], dtype=float)
-    headings = rollout.get("headings")
-    if headings is None:
-        infos = rollout.get("infos", [])
-        headings = [0.0] + [float(info.get("theta", 0.0)) for info in infos]
+    grid = np.asarray(rollouts[0]["grid"])
+    run_payloads: list[dict[str, Any]] = []
+    for rollout in rollouts:
+        positions = np.asarray(rollout["positions"], dtype=float)
+        headings = rollout.get("headings")
+        if headings is None:
+            infos = rollout.get("infos", [])
+            headings = [0.0] + [float(info.get("theta", 0.0)) for info in infos]
+        run_payloads.append(
+            {
+                "positions": positions,
+                "headings": headings,
+                "actions": rollout.get("actions", []),
+                "rewards": rollout.get("rewards", []),
+                "infos": rollout.get("infos", []),
+                "total_reward": rollout.get("total_reward", 0.0),
+                "steps": rollout.get("steps", 0),
+                "success": rollout.get("success", False),
+                "terminated": rollout.get("terminated", False),
+                "truncated": rollout.get("truncated", False),
+                "world_stats": rollout.get("world_stats", {}),
+                "rollout_seed": rollout.get("rollout_seed"),
+            }
+        )
 
-    return {
+    payload: dict[str, Any] = {
         "grid": grid,
         "n_cols": int(grid.shape[0]),
         "n_rows": int(grid.shape[1]),
-        "positions": positions,
-        "headings": headings,
-        "actions": rollout.get("actions", []),
-        "rewards": rollout.get("rewards", []),
-        "infos": rollout.get("infos", []),
-        "total_reward": rollout.get("total_reward", 0.0),
-        "steps": rollout.get("steps", 0),
-        "success": rollout.get("success", False),
-        "terminated": rollout.get("terminated", False),
-        "truncated": rollout.get("truncated", False),
-        "world_stats": rollout.get("world_stats", {}),
     }
+    if len(run_payloads) == 1:
+        payload.update(run_payloads[0])
+    else:
+        payload["runs"] = run_payloads
+        payload["aggregate"] = aggregate_rollout_metrics(rollouts)
+    return payload
 
 
 def _plot_history_metric(
@@ -663,6 +819,7 @@ def _write_deep_evaluation_summary(
     path: Path,
     history: list[dict[str, float]],
     agent: BaseAgent,
+    rollouts: list[dict[str, Any]] | None = None,
 ) -> None:
     """Write a compact text summary for a deep-RL run."""
     final = history[-1] if history else {}
@@ -681,6 +838,19 @@ def _write_deep_evaluation_summary(
         f"last_eval_success_rate: {_fmt(last_eval.get('eval/success_rate'))}",
         f"agent: {agent.__class__.__name__}",
     ]
+    if rollouts:
+        aggregate = aggregate_rollout_metrics(rollouts)
+        lines.extend(
+            [
+                "",
+                "Final greedy evaluation (best checkpoint)",
+                f"final_eval_runs: {int(aggregate['n_runs'])}",
+                f"final_eval_mean_reward: {aggregate['mean_reward']:.6g}",
+                f"final_eval_std_reward: {aggregate['std_reward']:.6g}",
+                f"final_eval_success_rate: {aggregate['success_rate']:.6g}",
+                f"final_eval_mean_steps: {aggregate['mean_steps']:.6g}",
+            ]
+        )
     with path.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 

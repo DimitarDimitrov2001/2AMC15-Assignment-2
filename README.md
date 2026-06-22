@@ -53,10 +53,11 @@ Environment and training:
 - `--episodes`, `--max-steps`, `--seed`: training budget and seed (default `3000` episodes, `500` max steps per episode, seed `0`).
 - `--device {auto,cpu,cuda,mps}`: compute device for learning agents (default `auto`, which picks cuda > mps > cpu). For the small grid MLP, `cpu` is often fastest.
 - `--eval-interval`, `--eval-episodes`: evaluation cadence and rollouts per evaluation (defaults `25` and `10`).
-- `--log-interval`: print window-averaged metrics every N episodes (default `10`). Terminal lines show mean reward, length, termination rate, TD loss, Q-value, and epsilon over the last `log_interval` episodes; W&B receives per-episode metrics under grouped keys (`rollout/*`, `losses/*`, `qvals/*`, `charts/*`).
+- `--final-eval-runs`: number of greedy evaluation rollouts from the best checkpoint after training, each with a distinct seed (default `1`). When greater than `1`, `policy_rollout.json` is a list and the combined `.png`/`.html` overlay all runs.
+- `--log-interval`: print window-averaged metrics every N episodes (default `25`, same as `--eval-interval`). Terminal lines show mean reward, length, termination rate, TD loss, Q-value, and epsilon over the last `log_interval` episodes; W&B receives per-episode metrics under grouped keys (`rollout/*`, `losses/*`, `qvals/*`, `charts/*`, `eval/*`).
 - `--out-dir`: output directory for checkpoints and `history.json` (default `results/<agent>_<timestamp>`).
 - `--wandb`, `--wandb-group`: enable Weights & Biases logging and optionally bucket runs under a group name.
-- `--no-visualize`, `--viz-out`, `--viz-max-steps`: visualization is enabled by default; `--no-visualize` disables the post-training rollout path image. When combined with `--wandb`, a greedy rollout is also rendered every `--log-interval` episodes and logged to the W&B `viz/rollout` panel (frames saved under `<out-dir>/rollouts/`).
+- `--no-visualize`, `--wandb-visualisations`, `--viz-max-steps`: with `--wandb`, a greedy rollout of the **best-so-far** checkpoint is rendered every `--wandb-visualisations` episodes (default `100`) and logged to W&B as `viz/rollout` (no local PNG is kept). `--no-visualize` disables these in-training W&B images. `--viz-max-steps` caps rollout length for both in-training W&B images and the post-training final evaluation.
 
 DQN exploration (`--agent dqn` or `--agent dueling-dqn`):
 
@@ -113,12 +114,12 @@ The `Trainer` (`training/trainer.py`) is algorithm-agnostic and supports an opti
 `train_deep.py` writes the following artifacts under `--out-dir`, or under `results/<agent>_<timestamp>` by default:
 
 - `best.pt` / `last.pt`: network checkpoints (best `eval/mean_reward` and final episode).
-- `history.json`: per-episode metric history.
+- `history.json`: per-episode metric history (the single source for tabular metrics). Each row includes rollout keys such as `rollout/episode_reward`, `rollout/episode_length`, `rollout/success`, and `rollout/collisions`, plus agent update metrics (`losses/*`, `qvals/*`, `dqn/*`), and eval keys (`eval/mean_reward`, `eval/success_rate`, …) on eval intervals.
 - `config.json`: resolved CLI/trainer configuration for the run.
-- `metrics.csv`: per-episode metrics in tabular form.
 - `training_curves.png`: reward, eval, success-rate, and TD-loss curves.
-- `rollouts/ep_XXXXXX.png`: in-training rollout images when visualization and `--wandb` are both enabled.
-- `policy_rollout.json` / `policy_rollout.png` / `policy_rollout.html`: greedy rollout rendered from the best available checkpoint unless `--no-visualize` is set.
+- `policy_rollout.json` / `policy_rollout.png` / `policy_rollout.html`: greedy rollout(s) from the best checkpoint after training (when one exists). A single run writes one object; `--final-eval-runs N` with `N > 1` writes a JSON list and combined multi-path visualizations.
+
+In-training rollout images are logged to W&B only (via `--wandb-visualisations`); no local `rollouts/` directory is created.
 
 When `--wandb` is enabled, the post-training files, including `policy_rollout.html`, are also logged as a W&B artifact.
 
@@ -170,6 +171,37 @@ The default reward function is defined in `world/environment_base.py` (`default_
 - otherwise (living penalty): `-0.01`
 
 A custom `reward_fn` can be passed to either environment to override these defaults. Wall and obstacle bumps keep the robot in place and receive the collision penalty.
+
+## Visualization
+
+Grid renderers (`visualize_random_agent.py`, `utils/rl_plots.py`, and the interactive
+`policy_rollout.html` viewer) use a **top-left origin**: `(0, 0)` is the top-left
+cell, `x` increases to the right, and `y` increases downward, matching NumPy
+`grid[row, col]` indexing.
+
+## SLURM experiment matrix
+
+Three array scripts under `scripts/` launch the 240-run deep-RL matrix on
+`gpu_mig` (reservation `terv92681`): 10000 episodes, `--env continuous`, `--wandb`,
+seeds `0–4`, grids `simple_cave_grid`, `A1_grid`, `big_spaces_cave`,
+`realistic_super_hard_cave`, agents `dqn` and `ddqn`.
+
+| Script | Array | Runs | Variants | `--final-eval-runs` |
+| --- | --- | --- | --- | --- |
+| `scripts/experiment_1.sh` | `0–39` | 40 | baseline (default sensors, σ=0) | 1 |
+| `scripts/experiment_2.sh` | `0–79` | 80 | `--no-sensors` vs default sensors | 1 |
+| `scripts/experiment_3.sh` | `0–119` | 120 | `--sigma` 0.0 / 0.2 / 0.5 | 10 |
+
+Outputs land under `results/experiment_<n>/<grid>_<agent>_…_seed<seed>/`.
+Validate wiring first with `scripts/smoke_experiments.sh` (array `0–5`, 20
+episodes, no W&B).
+
+```bash
+sbatch scripts/smoke_experiments.sh
+sbatch scripts/experiment_1.sh
+sbatch scripts/experiment_2.sh
+sbatch scripts/experiment_3.sh
+```
 
 ## Grids
 
