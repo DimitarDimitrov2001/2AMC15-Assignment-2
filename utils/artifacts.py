@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,11 +27,39 @@ if TYPE_CHECKING:
 
 
 
-def write_json(path: Path, payload: dict) -> None:
+def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
     """Write a JSON payload, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(_json_safe(payload), f, indent=2)
+
+
+def aggregate_rollout_metrics(rollouts: list[dict[str, Any]]) -> dict[str, float]:
+    """Return aggregate greedy-rollout metrics over multiple seeded runs."""
+    rewards = [float(rollout["total_reward"]) for rollout in rollouts]
+    steps = [float(rollout["steps"]) for rollout in rollouts]
+    successes = [1.0 if rollout.get("success") else 0.0 for rollout in rollouts]
+    n_runs = len(rollouts)
+    mean_reward = float(np.mean(rewards)) if rewards else 0.0
+    std_reward = float(np.std(rewards)) if rewards else 0.0
+    return {
+        "n_runs": float(n_runs),
+        "mean_reward": mean_reward,
+        "std_reward": std_reward,
+        "success_rate": float(np.mean(successes)) if successes else 0.0,
+        "mean_steps": float(np.mean(steps)) if steps else 0.0,
+    }
+
+
+def _normalize_rollouts(
+    rollout: dict[str, Any] | list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Return a rollout list or ``None`` when no rollout artifacts should be written."""
+    if rollout is None:
+        return None
+    if isinstance(rollout, list):
+        return rollout
+    return [rollout]
 
 
 def save_deep_rl_run_artifacts(
@@ -40,7 +67,7 @@ def save_deep_rl_run_artifacts(
     run_config: dict[str, Any],
     history: list[dict[str, float]],
     agent: BaseAgent,
-    rollout: dict[str, Any] | None = None,
+    rollout: dict[str, Any] | list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Save training curves, config, metrics, and optional greedy-rollout artifacts.
 
@@ -49,29 +76,32 @@ def save_deep_rl_run_artifacts(
         run_config: JSON-serializable run configuration.
         history: Per-episode trainer metrics.
         agent: Trained agent used for the evaluation summary.
-        rollout: Optional greedy rollout generated from the checkpointed policy.
+        rollout: Optional greedy rollout or list of rollouts from the checkpointed policy.
 
     Returns:
         Paths written by this function.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    rollouts = _normalize_rollouts(rollout)
     paths = [
         out_dir / "config.json",
-        out_dir / "metrics.csv",
         out_dir / "training_curves.png",
         out_dir / "evaluation_summary.txt",
     ]
     write_json(paths[0], run_config)
-    _write_metrics_csv(paths[1], history)
-    _write_deep_training_curves(paths[2], history)
-    _write_deep_evaluation_summary(paths[3], history, agent)
+    _write_deep_training_curves(paths[1], history)
+    _write_deep_evaluation_summary(paths[2], history, agent, rollouts=rollouts)
 
-    if rollout is not None:
+    if rollouts is not None:
         rollout_json = out_dir / "policy_rollout.json"
         rollout_png = out_dir / "policy_rollout.png"
-        write_json(rollout_json, dict(rollout))
-        _write_policy_rollout_plot(rollout_png, rollout)
-        _write_policy_rollout_html(rollout_html, rollout)
+        json_payload: dict[str, Any] | list[dict[str, Any]]
+        if len(rollouts) == 1:
+            json_payload = dict(rollouts[0])
+        else:
+            json_payload = [dict(item) for item in rollouts]
+        write_json(rollout_json, json_payload)
+        _write_policy_rollout_plot(rollout_png, rollouts)
         paths.extend([rollout_json, rollout_png])
 
     return paths
@@ -233,16 +263,6 @@ def save_policy_disagreement_artifact(
     plt.close(fig)
 
 
-def _write_metrics_csv(path: Path, history: list[dict[str, float]]) -> None:
-    """Write per-episode metrics to CSV."""
-    fieldnames = sorted({key for row in history for key in row})
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in history:
-            writer.writerow(row)
-
-
 def _write_deep_training_curves(path: Path, history: list[dict[str, float]]) -> None:
     """Write the core deep-RL training curves."""
     fig, axes = plt.subplots(2, 2, figsize=(11, 8))
@@ -256,10 +276,31 @@ def _write_deep_training_curves(path: Path, history: list[dict[str, float]]) -> 
     plt.close(fig)
 
 
-def _write_policy_rollout_plot(path: Path, rollout: dict[str, Any]) -> None:
-    """Write a static PNG of a greedy policy rollout."""
-    grid = np.asarray(rollout["grid"])
-    positions = np.asarray(rollout["positions"], dtype=float) - 0.5
+_ROLLOUT_PATH_COLORS = (
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+)
+
+
+def _write_policy_rollout_plot(
+    path: Path,
+    rollout: dict[str, Any] | list[dict[str, Any]],
+) -> None:
+    """Write a static PNG of one or more greedy policy rollouts."""
+    rollouts = rollout if isinstance(rollout, list) else [rollout]
+    multi = len(rollouts) > 1
+    grid = np.asarray(rollouts[0]["grid"])
+    positions_list = [
+        np.asarray(item["positions"], dtype=float) - 0.5 for item in rollouts
+    ]
     n_cols, n_rows = grid.shape
 
     fig, ax = plt.subplots(
@@ -268,11 +309,16 @@ def _write_policy_rollout_plot(path: Path, rollout: dict[str, Any]) -> None:
     )
     _draw_grid_background(ax, grid)
 
-    if len(positions) > 0:
+    path_alpha = 0.35 if multi else 1.0
+    for index, positions in enumerate(positions_list):
+        color = _ROLLOUT_PATH_COLORS[index % len(_ROLLOUT_PATH_COLORS)]
+        if len(positions) == 0:
+            continue
         ax.plot(
             positions[:, 0],
             positions[:, 1],
-            color="#1f77b4",
+            color=color,
+            alpha=path_alpha,
             linewidth=2,
             marker="o",
             markersize=3,
@@ -282,77 +328,56 @@ def _write_policy_rollout_plot(path: Path, rollout: dict[str, Any]) -> None:
         start_circle = plt.Circle(
             (start_col, start_row),
             0.35,
-            facecolor="#E8C13A",
+            facecolor="#E8C13A" if not multi else color,
             edgecolor="black",
             linewidth=1.5,
+            alpha=0.9 if multi else 1.0,
             zorder=4,
         )
         ax.add_patch(start_circle)
-        ax.text(
-            start_col,
-            start_row,
-            "S",
-            ha="center",
-            va="center",
-            fontsize=7,
-            fontweight="bold",
-            color="black",
-            zorder=5,
-        )
+        if not multi:
+            ax.text(
+                start_col,
+                start_row,
+                "S",
+                ha="center",
+                va="center",
+                fontsize=7,
+                fontweight="bold",
+                color="black",
+                zorder=5,
+            )
         ax.scatter(
             positions[-1, 0],
             positions[-1, 1],
-            color="#d62728",
-            s=90,
+            color=color,
+            s=70 if multi else 90,
             marker="X",
             edgecolors="black",
+            alpha=0.9,
             zorder=5,
         )
 
-    ax.set_title(
-        "Greedy policy rollout "
-        f"(steps={rollout['steps']}, reward={rollout['total_reward']:.3f}, "
-        f"success={rollout['success']})"
-    )
+    if multi:
+        aggregate = aggregate_rollout_metrics(rollouts)
+        title = (
+            "Greedy policy rollouts "
+            f"(runs={int(aggregate['n_runs'])}, "
+            f"mean_reward={aggregate['mean_reward']:.3f}, "
+            f"success_rate={aggregate['success_rate']:.3f})"
+        )
+    else:
+        single = rollouts[0]
+        title = (
+            "Greedy policy rollout "
+            f"(steps={single['steps']}, reward={single['total_reward']:.3f}, "
+            f"success={single['success']})"
+        )
+    ax.set_title(title)
     _configure_grid_axes(ax, n_cols, n_rows)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-
-def _write_policy_rollout_html(path: Path, rollout: dict[str, Any]) -> None:
-    """Write an interactive HTML rollout viewer."""
-    payload = _html_rollout_payload(rollout)
-    data_json = json.dumps(_json_safe(payload), separators=(",", ":")).replace("</", "<\\/")
-    html = Template(_ROLLOUT_HTML_TEMPLATE).substitute(payload=data_json)
-    with path.open("w", encoding="utf-8") as f:
-        f.write(html)
-
-
-def _html_rollout_payload(rollout: dict[str, Any]) -> dict[str, Any]:
-    """Return the compact payload consumed by the HTML viewer."""
-    grid = np.asarray(rollout["grid"])
-    positions = np.asarray(rollout["positions"], dtype=float)
-    headings = rollout.get("headings")
-    if headings is None:
-        infos = rollout.get("infos", [])
-        headings = [0.0] + [float(info.get("theta", 0.0)) for info in infos]
-
-    return {
-        "grid": grid,
-        "n_cols": int(grid.shape[0]),
-        "n_rows": int(grid.shape[1]),
-        "positions": positions,
-        "headings": headings,
-        "actions": rollout.get("actions", []),
-        "rewards": rollout.get("rewards", []),
-        "infos": rollout.get("infos", []),
-        "total_reward": rollout.get("total_reward", 0.0),
-        "steps": rollout.get("steps", 0),
-        "success": rollout.get("success", False),
-        "terminated": rollout.get("terminated", False),
-        "truncated": rollout.get("truncated", False),
-        "world_stats": rollout.get("world_stats", {}),
-    }
 
 
 def _plot_history_metric(
@@ -379,6 +404,7 @@ def _write_deep_evaluation_summary(
     path: Path,
     history: list[dict[str, float]],
     agent: BaseAgent,
+    rollouts: list[dict[str, Any]] | None = None,
 ) -> None:
     """Write a compact text summary for a deep-RL run."""
     final = history[-1] if history else {}
@@ -397,6 +423,19 @@ def _write_deep_evaluation_summary(
         f"last_eval_success_rate: {_fmt(last_eval.get('eval/success_rate'))}",
         f"agent: {agent.__class__.__name__}",
     ]
+    if rollouts:
+        aggregate = aggregate_rollout_metrics(rollouts)
+        lines.extend(
+            [
+                "",
+                "Final greedy evaluation (best checkpoint)",
+                f"final_eval_runs: {int(aggregate['n_runs'])}",
+                f"final_eval_mean_reward: {aggregate['mean_reward']:.6g}",
+                f"final_eval_std_reward: {aggregate['std_reward']:.6g}",
+                f"final_eval_success_rate: {aggregate['success_rate']:.6g}",
+                f"final_eval_mean_steps: {aggregate['mean_steps']:.6g}",
+            ]
+        )
     with path.open("w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 

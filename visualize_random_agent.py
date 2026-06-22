@@ -90,7 +90,7 @@ def draw_grid(ax, grid: np.ndarray):
                 ec="#cccccc", linewidth=0.4,
             ))
     ax.set_xlim(0, rows)
-    ax.set_ylim(0, cols)
+    ax.set_ylim(cols, 0)  # top-left origin: row/col index 0 at top, y increases downward
     ax.set_aspect("equal")
     ax.set_xlabel("x")
     ax.set_ylabel("y")

@@ -17,6 +17,7 @@ import functools
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 import re
+import tempfile
 from typing import Any
 
 # Force a headless backend before pyplot is imported (via visualize_random_agent),
@@ -79,8 +80,13 @@ from training.defaults import (
     DEFAULT_EVAL_EPISODES,
     DEFAULT_LOG_INTERVAL,
     DEFAULT_VIZ_MAX_STEPS,
+    DEFAULT_WANDB_VIZ_INTERVAL,
 )
-from utils.artifacts import log_wandb_artifact, save_deep_rl_run_artifacts
+from utils.artifacts import (
+    aggregate_rollout_metrics,
+    log_wandb_artifact,
+    save_deep_rl_run_artifacts,
+)
 from world import GRID_CONFIGS_FP, ContinuousEnvironment, MinimalEnvironment
 from visualize_random_agent import visualize_agent
 
@@ -244,6 +250,7 @@ def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> Base
                                  (tuple(env.agent_start_pos) if env.agent_start_pos is not None else None))),
                 use_sensors=args.use_sensors,
                 step_size=args.step_size,
+                sigma=args.sigma,
             ),
             seed=args.seed,
             total_steps=(args.a3c_total_steps if args.a3c_total_steps is not None
@@ -315,8 +322,11 @@ def parse_args() -> Namespace:
                         help="Evaluate every N episodes.")
     parser.add_argument("--eval-episodes", type=int, default=DEFAULT_EVAL_EPISODES, dest="eval_episodes",
                         help="Episodes per evaluation.")
+    parser.add_argument("--final-eval-runs", type=int, default=1, dest="final_eval_runs",
+                        help="Greedy evaluation rollouts from the best checkpoint after training, "
+                             "each with a distinct seed (distinct from --eval-episodes).")
     parser.add_argument("--log-interval", type=int, default=DEFAULT_LOG_INTERVAL, dest="log_interval",
-                        help="Print/log metrics (and rollout image) every N episodes.")
+                        help="Print/log metrics every N episodes (default: same as --eval-interval).")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto",
                         help="Compute device; 'auto' picks cuda > mps > cpu.")
     
@@ -382,9 +392,12 @@ def parse_args() -> Namespace:
                         help="W&B group name to bucket related runs under.")
 
     parser.add_argument("--no-visualize", action="store_true", dest="no_visualize",
-                        help="Disable rollout path visualizations.")
-    parser.add_argument("--viz-out", type=Path, default=None, dest="viz_out",
-                        help="Visualization output path (defaults under --out-dir or CWD).")
+                        help="Disable in-training W&B rollout images (requires --wandb).")
+    parser.add_argument("--wandb-visualisations", type=int, default=DEFAULT_WANDB_VIZ_INTERVAL,
+                        dest="wandb_viz_interval",
+                        help="When --wandb is set, log a greedy rollout of the best-so-far "
+                             "policy to W&B every N episodes (default: 100). "
+                             "No local PNG is kept.")
     parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
                         help="Max steps for the visualization rollout.")
     parser.add_argument("--curiosity", type=str, default="no", dest="curiosity",
@@ -421,6 +434,7 @@ def _build_config(args: Namespace) -> TrainerConfig:
         eval_interval=args.eval_interval,
         eval_episodes=args.eval_episodes,
         log_interval=args.log_interval,
+        wandb_viz_interval=args.wandb_viz_interval,
         checkpoint_dir=checkpoint_dir,
         save_best=True,
         save_last=True,
@@ -498,19 +512,20 @@ def _run_policy_rollout(
     agent: BaseAgent,
     eval_start: tuple[float, float] | None,
     max_steps: int,
+    rollout_seed: int,
 ) -> dict[str, Any]:
     """Run one greedy rollout for artifact generation."""
     env = _build_env(
         args.env,
         args.grid,
-        args.seed + 20_000,
+        rollout_seed,
         eval_start,
         args.use_sensors,
         args.step_size,
         sigma=args.sigma,
     )
     agent.on_episode_start(0)
-    state = _reset_env_for_rollout(env, seed=args.seed + 20_000)
+    state = _reset_env_for_rollout(env, seed=rollout_seed)
     initial_grid = np.copy(env.grid)
     positions = [np.asarray(env.pos, dtype=float).copy()]
     headings = [float(getattr(env, "theta", 0.0))]
@@ -552,6 +567,7 @@ def _run_policy_rollout(
         "truncated": bool(truncated),
         "success": bool(terminated),
         "world_stats": dict(env.world_stats),
+        "rollout_seed": rollout_seed,
     }
 
 
@@ -619,7 +635,7 @@ def main() -> None:
           f"eval_start={'random' if eval_start is None else eval_start}")
 
     viz_fn = None
-    if not args.no_visualize:
+    if args.wandb and not args.no_visualize and args.wandb_viz_interval > 0:
         viz_env = _build_env(
             args.env,
             args.grid,
@@ -629,16 +645,39 @@ def main() -> None:
             args.step_size,
             sigma=args.sigma,
         )
-        rollout_dir = (args.out_dir if args.out_dir is not None else Path(".")) / "rollouts"
-        rollout_dir.mkdir(parents=True, exist_ok=True)
+        viz_agent = _build_agent(args, viz_env, device)
+        checkpoint_dir = Path(config.checkpoint_dir) if config.checkpoint_dir is not None else None
 
-        def viz_fn(rollout_agent: BaseAgent, episode: int,
-                   _env: BaseGridEnvironment = viz_env, _dir: Path = rollout_dir) -> str:
-            out = _dir / f"ep_{episode:06d}.png"
-            return str(visualize_agent(
-                _env, rollout_agent, max_steps=args.viz_max_steps, out=out,
-                title=f"{args.agent} | {args.env} | ep {episode}",
-            ))
+        def viz_fn(
+            train_agent: BaseAgent,
+            episode: int,
+            _viz_agent: BaseAgent = viz_agent,
+            _viz_env: BaseGridEnvironment = viz_env,
+            _checkpoint_dir: Path | None = checkpoint_dir,
+        ) -> str:
+            """Render the best-so-far policy to a temporary PNG path."""
+            best_path = _checkpoint_dir / "best.pt" if _checkpoint_dir is not None else None
+            if best_path is not None and best_path.exists():
+                _viz_agent.load_checkpoint(str(best_path))
+            else:
+                with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as checkpoint_tmp:
+                    checkpoint_tmp_path = Path(checkpoint_tmp.name)
+                try:
+                    train_agent.save_checkpoint(str(checkpoint_tmp_path))
+                    _viz_agent.load_checkpoint(str(checkpoint_tmp_path))
+                finally:
+                    checkpoint_tmp_path.unlink(missing_ok=True)
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as image_tmp:
+                image_path = Path(image_tmp.name)
+            visualize_agent(
+                _viz_env,
+                _viz_agent,
+                max_steps=args.viz_max_steps,
+                out=image_path,
+                title=f"{args.agent} | {args.env} | ep {episode} (best-so-far)",
+            )
+            return str(image_path)
 
     trainer = Trainer(env=env, agent=agent, config=config, eval_env=eval_env, viz_fn=viz_fn)
     try:
@@ -648,26 +687,42 @@ def main() -> None:
         if history:
             print(f"Last episode metrics: {history[-1]}")
 
-        rollout = None
+        rollouts: list[dict[str, Any]] | None = None
         checkpoint_path = _best_checkpoint_path(config)
         if checkpoint_path is not None:
             agent.load_checkpoint(str(checkpoint_path))
             print(f"loaded checkpoint for final rollout -> {checkpoint_path}")
+            rollouts = []
+            for run_idx in range(args.final_eval_runs):
+                rollout_seed = args.seed + 20_000 + run_idx
+                rollouts.append(
+                    _run_policy_rollout(
+                        args=args,
+                        agent=agent,
+                        eval_start=eval_start,
+                        max_steps=args.viz_max_steps,
+                        rollout_seed=rollout_seed,
+                    )
+                )
+            if args.final_eval_runs > 1:
+                agg = aggregate_rollout_metrics(rollouts)
+                print(
+                    f"final eval ({args.final_eval_runs} runs): "
+                    f"mean_reward={agg['mean_reward']:.3f} "
+                    f"success_rate={agg['success_rate']:.3f} "
+                    f"mean_steps={agg['mean_steps']:.1f}"
+                )
 
-        if not args.no_visualize:
-            rollout = _run_policy_rollout(
-                args=args,
-                agent=agent,
-                eval_start=eval_start,
-                max_steps=args.viz_max_steps,
-            )
+        rollout_payload: dict[str, Any] | list[dict[str, Any]] | None = None
+        if rollouts is not None:
+            rollout_payload = rollouts[0] if len(rollouts) == 1 else rollouts
 
         artifact_paths = save_deep_rl_run_artifacts(
             out_dir=args.out_dir,
             run_config=_run_config(args, config, device),
             history=history,
             agent=agent,
-            rollout=rollout,
+            rollout=rollout_payload,
         )
         artifact_paths.extend(
             path
@@ -683,8 +738,22 @@ def main() -> None:
                 aliases=["latest", "best-policy"],
             )
 
-        if rollout is not None:
+        if rollouts is not None:
             print(f"saved rollout html -> {args.out_dir / 'policy_rollout.html'}")
+            if args.wandb:
+                import wandb
+
+                if wandb.run is not None:
+                    agg = aggregate_rollout_metrics(rollouts)
+                    wandb.run.summary.update(
+                        {
+                            "final_eval/n_runs": agg["n_runs"],
+                            "final_eval/mean_reward": agg["mean_reward"],
+                            "final_eval/std_reward": agg["std_reward"],
+                            "final_eval/success_rate": agg["success_rate"],
+                            "final_eval/mean_steps": agg["mean_steps"],
+                        }
+                    )
     finally:
         if args.wandb:
             trainer.finish_wandb()

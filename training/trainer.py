@@ -37,8 +37,8 @@ class Trainer:
         agent: BaseAgent,
         config: TrainerConfig, # Includes all the settings from the config
         eval_env: BaseGridEnvironment | None = None, # Separate evaluation environment? (Optional)
-        # Optional hook: render a greedy rollout for ``agent`` at ``episode`` and
-        # return the saved image path. Logged to W&B at the logging cadence.
+        # Optional hook: render a greedy rollout of the best-so-far policy and
+        # return a temporary image path for W&B logging.
         viz_fn: Callable[[BaseAgent, int], str] | None = None,
     ) -> None:
         self.env = env
@@ -167,6 +167,9 @@ class Trainer:
                 "rollout/episode_reward": float(episode_reward),
                 "rollout/episode_length": float(episode_length),
                 "rollout/success": float(terminated),
+                "rollout/collisions": float(
+                    self.env.world_stats.get("total_collisions", 0.0)
+                ),
                 "charts/SPS": float(self.global_step / max(time.perf_counter() - start_time, 1e-9)),
             }
 
@@ -190,7 +193,8 @@ class Trainer:
             # Print metrics and pass to W&B
             if episode % self.config.log_interval == 0:
                 self._log(episode_metrics, episode)
-                self._maybe_log_rollout(episode)
+
+            self._maybe_log_rollout(episode)
 
             # Honor the optional env-step budget
             if stop_training:
@@ -237,7 +241,8 @@ class Trainer:
 
             if episode % self.config.log_interval == 0:
                 self._log(episode_metrics, episode)
-                self._maybe_log_rollout(episode)
+
+            self._maybe_log_rollout(episode)
 
         self._maybe_save_last()
         if self.config.history_path is not None:
@@ -248,16 +253,30 @@ class Trainer:
         return self.history
 
     def _maybe_log_rollout(self, episode: int) -> None:
-        """Render a greedy rollout and log it to W&B as an image (no-op if disabled).
+        """Render a greedy rollout of the best-so-far policy and log it to W&B.
 
-        The image path is logged directly to W&B and intentionally kept out of
-        ``episode_metrics`` (which is JSON-serialised by ``save_history``).
+        Fires every ``wandb_viz_interval`` episodes when W&B and ``viz_fn`` are
+        enabled. The rendered PNG is written to a temporary path by ``viz_fn``,
+        logged to W&B, then deleted locally.
         """
-        if self._wandb is None or self._viz_fn is None:
+        interval = self.config.wandb_viz_interval
+        if (
+            self._wandb is None
+            or self._viz_fn is None
+            or interval <= 0
+            or episode % interval != 0
+        ):
             return
-        image_path = self._viz_fn(self.agent, episode)
-        image = self._wandb.Image(image_path, caption=f"episode {episode}")
-        self._wandb.log({"viz/rollout": image}, step=self.global_step)
+
+        image_path = Path(self._viz_fn(self.agent, episode))
+        try:
+            image = self._wandb.Image(
+                str(image_path),
+                caption=f"episode {episode} (best-so-far)",
+            )
+            self._wandb.log({"viz/rollout": image}, step=self.global_step)
+        finally:
+            image_path.unlink(missing_ok=True)
 
     def save_history(self, path: str) -> None:
         """Write the per-episode metric history to ``path`` as JSON."""
@@ -446,7 +465,7 @@ class Trainer:
             ("buffer", "dqn/buffer_size", ".0f"),
             ("updates", "dqn/updates", ".0f"),
             ("success", "success", ".0f"),
-            ("collisions", "collisions", ".0f"),
+            ("collisions", "rollout/collisions", ".0f"),
             ("eval_reward", "eval/mean_reward", ".3f"),
             ("eval_success", "eval/success_rate", ".3f"),
         ]

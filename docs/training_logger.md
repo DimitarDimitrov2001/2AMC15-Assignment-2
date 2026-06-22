@@ -76,3 +76,29 @@ uv run python docs/examples/training_logger_example.py
 
 The script simulates a tiny training loop with synthetic Q-values and shows both
 `"scroll"` and `"frame"` modes.
+
+---
+
+## Deep-RL `Trainer` history (`history.json`)
+
+`train_deep.py` persists per-episode metrics through `training/trainer.py`, which
+writes a JSON list to `history.json` under `--out-dir`. This file is the **only**
+per-episode metrics artifact; `metrics.csv` is not emitted.
+
+Each history row is a flat dict of metric keys. Common rollout keys:
+
+| Key | Description |
+| --- | --- |
+| `rollout/episode_reward` | Undiscounted return for the training episode |
+| `rollout/episode_length` | Steps taken in the episode |
+| `rollout/success` | `1.0` when the agent reached the target |
+| `rollout/collisions` | Wall/obstacle collisions during the episode |
+
+Eval keys (`eval/mean_reward`, `eval/success_rate`, …) appear on rows where
+`episode % eval_interval == 0`. Agent-specific update metrics (`losses/td_loss`,
+`qvals/mean_q`, `dqn/epsilon`, …) are included when the agent reports them.
+
+W&B receives the same keys (grouped under `rollout/*`, `losses/*`, `eval/*`, …).
+With `--wandb`, in-training rollout images of the best-so-far checkpoint are logged
+to `viz/rollout` every `--wandb-visualisations` episodes (default `100`); no local
+PNG copies are kept.

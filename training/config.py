@@ -10,6 +10,7 @@ from training.defaults import (
     DEFAULT_LOG_INTERVAL,
     DEFAULT_WANDB_PROJECT,
     DEFAULT_BEST_METRIC,
+    DEFAULT_WANDB_VIZ_INTERVAL,
 )
 
 
@@ -35,6 +36,7 @@ class TrainerConfig:
 
     # Logging
     log_interval: int = DEFAULT_LOG_INTERVAL # How often to print training metrics
+    wandb_viz_interval: int = DEFAULT_WANDB_VIZ_INTERVAL # W&B rollout image cadence (0 disables)
 
     # Checkpointing
     checkpoint_dir: str | None = None # Directory for agent checkpoints (None disables)

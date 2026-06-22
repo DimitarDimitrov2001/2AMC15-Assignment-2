@@ -77,6 +77,7 @@ def _draw_grid_background(ax: plt.Axes, grid: np.ndarray) -> None:
         mask = (grid == cell_type).T
         img[mask] = rgba
 
+    # origin="upper": row 0 at top, matching numpy grid[row, col] indexing.
     ax.imshow(img, aspect="equal", origin="upper", interpolation="nearest", zorder=0)
 
 
