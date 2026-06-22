@@ -1,8 +1,8 @@
 """Deep-RL training CLI.
 
 Entry point for the new continuous/minimal environments and the algorithm-
-agnostic Trainer. Only the random agent is wired today; learning agents
-(DQN, PPO, ...) plug in via the agent factory without touching this script.
+agnostic Trainer. Learning agents (DQN, Dueling-DQN, A3C, ...) plug in via
+the agent factory without touching this script.
 
 Usage:
     uv run python train_deep.py --env minimal
@@ -35,6 +35,7 @@ import torch
 from agents import RandomAgent
 from agents.base_agent import BaseAgent
 from agents.dqn_agent import DQNAgent
+from agents.ddqn_agent import DuelingDQNAgent
 from agents.a3c_agent import A3CAgent
 from agents.epsilon_schedules import ConstantEpsilon, EpsilonSchedule, ExponentialEpsilonDecay, LinearEpsilonAnnealing
 from agents.defaults import (
@@ -104,17 +105,22 @@ def _build_reward_fn(
         return living_penalty
     return reward_fn
 
-def _build_env(name: str, grid: Path, seed: int,
-               start_pos: tuple[float, float] | None = None,
-               use_sensors: bool = True,
-               step_size: float | None = None,
-               reward_fn: RewardFn | None = None
-            ) -> BaseGridEnvironment:
+def _build_env(
+    name: str,
+    grid: Path,
+    seed: int,
+    start_pos: tuple[float, float] | None = None,
+    use_sensors: bool = True,
+    step_size: float | None = None,
+    reward_fn: RewardFn | None = None,
+    sigma: float = 0.0,
+) -> BaseGridEnvironment:
     """Construct the requested environment with sensible defaults.
 
     ``use_sensors`` only affects the continuous environment (toggles the
     distance-sensor readings in the observation); it is ignored otherwise.
     ``step_size`` overrides the env's default move size when provided.
+    ``sigma`` sets continuous-env action noise std-dev; ignored for minimal.
     """
     # Only override the env's own default step size when explicitly requested.
     step_kwargs = {"step_size": step_size} if step_size is not None else {}
@@ -133,6 +139,7 @@ def _build_env(name: str, grid: Path, seed: int,
             use_sensors=use_sensors,
             random_seed=seed,
             reward_fn=reward_fn,
+            sigma=sigma,
             **step_kwargs,
         )
     raise ValueError(f"Unknown environment: {name}")
@@ -174,6 +181,45 @@ def _resolve_device(choice: str) -> str:
     return "cpu"
 
 
+def _build_intrinsic_motivation(args: Namespace, env: BaseGridEnvironment) -> NoMotivation | GridCountMotivation:
+    """Return the curiosity module selected on the CLI."""
+    if args.curiosity == "grid_count":
+        return GridCountMotivation(
+            max_x=env.observation_high[0],
+            max_y=env.observation_high[1],
+            resolution=CURIOSITY_RESOLUTION_DEFAULT,
+            beta=args.curiosity_beta,
+        )
+    return NoMotivation()
+
+
+def _build_dqn_agent(args: Namespace, env: BaseGridEnvironment, device: str, agent_cls: type[DQNAgent]) -> DQNAgent:
+    """Construct a DQN-family agent with shared deep-RL hyperparameters."""
+    return agent_cls(
+        env=env,
+        seed=args.seed,
+        device=device,
+        gamma=args.gamma,
+        learning_rate=args.lr,
+        batch_size=args.batch_size,
+        replay_buffer_capacity=args.replay_capacity,
+        no_obs_in_state=args.stack_size,
+        update_freq=args.update_freq,
+        target_update_freq=args.target_update_freq,
+        reward_clip=args.reward_clip if args.reward_clip > 0 else None,
+        grad_clip_norm=args.grad_clip_norm if args.grad_clip_norm > 0 else None,
+        epsilon_scheduler=_build_epsilon_schedule(
+            choice=args.epsilon_schedule,
+            epsilon_max=args.epsilon_max,
+            epsilon_min=args.epsilon_min,
+            decay=args.decay,
+            epsilon_start_step=args.epsilon_start_step,
+            epsilon_duration=args.epsilon_duration,
+        ),
+        intrinsic_motivation=_build_intrinsic_motivation(args, env),
+    )
+
+
 def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> BaseAgent:
     """Construct the requested agent.
 
@@ -182,34 +228,9 @@ def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> Base
     """
     builders = {
         "random": lambda: RandomAgent(num_actions=env.n_actions, seed=args.seed),
-        "dqn": lambda: DQNAgent(
-            env=env,
-            seed=args.seed,
-            device=device,
-            gamma=args.gamma,
-            learning_rate=args.lr,
-            batch_size=args.batch_size,
-            replay_buffer_capacity=args.replay_capacity,
-            no_obs_in_state=args.stack_size,
-            update_freq=args.update_freq,
-            target_update_freq=args.target_update_freq,
-            reward_clip=args.reward_clip if args.reward_clip > 0 else None,
-            grad_clip_norm=args.grad_clip_norm if args.grad_clip_norm > 0 else None,
-            epsilon_scheduler=_build_epsilon_schedule(
-                choice=args.epsilon_schedule,
-                epsilon_max=args.epsilon_max,
-                epsilon_min=args.epsilon_min,
-                decay=args.decay,
-                epsilon_start_step=args.epsilon_start_step,
-                epsilon_duration=args.epsilon_duration
-            ),
-            intrinsic_motivation=GridCountMotivation(
-                max_x=env.observation_high[0],
-                max_y=env.observation_high[1],
-                resolution=CURIOSITY_RESOLUTION_DEFAULT,
-                beta=args.curiosity_beta,
-            ) if args.curiosity == "grid_count" else NoMotivation()
-        ),
+        "dqn": lambda: _build_dqn_agent(args, env, device, DQNAgent),
+        "dueling-dqn": lambda: _build_dqn_agent(args, env, device, DuelingDQNAgent),
+        "ddqn": lambda: _build_dqn_agent(args, env, device, DuelingDQNAgent),
         "a3c": lambda: A3CAgent(
             env=env,
             # Picklable factory (module-level fn + primitive args) so each worker
@@ -261,8 +282,15 @@ def parse_args() -> Namespace:
                         help="Override the env move/step size (defaults: continuous 0.5, "
                              "minimal 0.5). Larger values mean fewer steps to cross the map, "
                              "so the goal is reachable in a shorter horizon and episodes run faster.")
-    parser.add_argument("--agent", choices=("random", "dqn", "a3c"), default="dqn",
-                        help="Agent to train.")
+    parser.add_argument("--sigma", type=float, default=0.0,
+                        help="Continuous env only: action noise std-dev (action_sigma); "
+                             "0 keeps actions deterministic.")
+    parser.add_argument(
+        "--agent",
+        choices=("random", "dqn", "dueling-dqn", "ddqn", "a3c"),
+        default="dqn",
+        help="Agent to train (`ddqn` is an alias for `dueling-dqn`).",
+    )
     parser.add_argument("--grid", type=Path, default=GRID_CONFIGS_FP / DEFAULT_GRID_FILENAME,
                         help="Path to a .npy grid file.")
     parser.add_argument("--start-pos", type=float, nargs=2, default=None, dest="start_pos",
@@ -361,7 +389,7 @@ def parse_args() -> Namespace:
                         help="Max steps for the visualization rollout.")
     parser.add_argument("--curiosity", type=str, default="no", dest="curiosity",
                         choices=("no", "grid_count", "grid-count"),
-                        help="DQN/A3C only: intrinsic motivation to use. Supports no, grid_count, and grid-count.")
+                        help="DQN/Dueling-DQN/A3C only: intrinsic motivation to use. Supports no, grid_count, and grid-count.")
     parser.add_argument("--curiosity-beta", type=float, default=BETA_DEFAULT, dest="curiosity_beta",
                         help="Beta value for the curiosity term.")
     parser.add_argument("--target-reward", type=float, default=GOAL_REWARD, dest="target_reward",
@@ -472,7 +500,15 @@ def _run_policy_rollout(
     max_steps: int,
 ) -> dict[str, Any]:
     """Run one greedy rollout for artifact generation."""
-    env = _build_env(args.env, args.grid, args.seed + 20_000, eval_start, args.use_sensors, args.step_size)
+    env = _build_env(
+        args.env,
+        args.grid,
+        args.seed + 20_000,
+        eval_start,
+        args.use_sensors,
+        args.step_size,
+        sigma=args.sigma,
+    )
     agent.on_episode_start(0)
     state = _reset_env_for_rollout(env, seed=args.seed + 20_000)
     initial_grid = np.copy(env.grid)
@@ -555,8 +591,25 @@ def main() -> None:
     eval_start = tuple(args.eval_start_pos) if args.eval_start_pos is not None else base_start
     train_start = None if args.exploring_starts else base_start
     reward_fn = _build_reward_fn(args.target_reward, args.living_penalty, args.collision_penalty)
-    env = _build_env(args.env, args.grid, args.seed, train_start, args.use_sensors, args.step_size, reward_fn)
-    eval_env = _build_env(args.env, args.grid, args.seed, eval_start, args.use_sensors, args.step_size)
+    env = _build_env(
+        args.env,
+        args.grid,
+        args.seed,
+        train_start,
+        args.use_sensors,
+        args.step_size,
+        reward_fn,
+        sigma=args.sigma,
+    )
+    eval_env = _build_env(
+        args.env,
+        args.grid,
+        args.seed,
+        eval_start,
+        args.use_sensors,
+        args.step_size,
+        sigma=args.sigma,
+    )
     agent = _build_agent(args, env, device)
     config = _build_config(args)
 
@@ -567,7 +620,15 @@ def main() -> None:
 
     viz_fn = None
     if not args.no_visualize:
-        viz_env = _build_env(args.env, args.grid, args.seed, eval_start, args.use_sensors, args.step_size)
+        viz_env = _build_env(
+            args.env,
+            args.grid,
+            args.seed,
+            eval_start,
+            args.use_sensors,
+            args.step_size,
+            sigma=args.sigma,
+        )
         rollout_dir = (args.out_dir if args.out_dir is not None else Path(".")) / "rollouts"
         rollout_dir.mkdir(parents=True, exist_ok=True)
 

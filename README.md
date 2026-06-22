@@ -23,7 +23,7 @@ All commands below should be run from the repository root, the folder that conta
 
 ## Deep-RL Training With `train_deep.py`
 
-`train_deep.py` is the main training entry point for the deep-RL stack: the continuous/minimal environments and the algorithm-agnostic `Trainer` in `training/`. The random baseline, a DQN agent, and an A3C agent are wired today. Further learning agents (PPO, ...) plug in through the `_build_agent` factory without changing the training loop.
+`train_deep.py` is the main training entry point for the deep-RL stack: the continuous/minimal environments and the algorithm-agnostic `Trainer` in `training/`. The random baseline, DQN, Dueling-DQN, and A3C agents are wired today. Further learning agents (PPO, ...) plug in through the `_build_agent` factory without changing the training loop.
 
 General form:
 
@@ -43,8 +43,9 @@ Environment and training:
 
 - `--env {minimal,continuous}`: environment to train on (default `continuous`).
 - `--no-sensors`: continuous env only. Drop the 8 distance sensors from the observation, leaving the bare `(x, y, theta)` state (state dim `11 → 3`). Sensors are included by default.
+- `--sigma`: continuous env only. Action noise std-dev (`action_sigma`); default `0.0` keeps actions deterministic.
 - `--step-size`: override the env move/step size (defaults: continuous `0.5`, minimal `0.5`). Larger values cross the map in fewer steps, so the goal is reachable in a shorter horizon and episodes run faster.
-- `--agent {random,dqn,a3c}`: agent to train (default `dqn`).
+- `--agent {random,dqn,dueling-dqn,ddqn,a3c}`: agent to train (default `dqn`; `ddqn` is an alias for `dueling-dqn`).
 - `--grid`: path to a `.npy` grid file (default `grid_configs/A1_grid.npy`).
 - `--start-pos X Y`: fixed continuous (x, y) start for evaluation and visualization (and for training unless `--exploring-starts` is set). Omit to use the grid's START_CELL, falling back to a random empty cell each episode.
 - `--eval-starting-pos X Y`: fixed continuous (x, y) start used only for evaluation and visualization. Overrides `--start-pos` for the eval/viz env while leaving the training start unchanged. Omit to fall back to `--start-pos`.
@@ -57,14 +58,14 @@ Environment and training:
 - `--wandb`, `--wandb-group`: enable Weights & Biases logging and optionally bucket runs under a group name.
 - `--no-visualize`, `--viz-out`, `--viz-max-steps`: visualization is enabled by default; `--no-visualize` disables the post-training rollout path image. When combined with `--wandb`, a greedy rollout is also rendered every `--log-interval` episodes and logged to the W&B `viz/rollout` panel (frames saved under `<out-dir>/rollouts/`).
 
-DQN exploration (`--agent dqn` only):
+DQN exploration (`--agent dqn` or `--agent dueling-dqn`):
 
 - `--epsilon-max`: start epsilon for linear annealing, or fixed rate when `--epsilon-duration 0` (default `1.0`). Eval always uses greedy action selection regardless of this value.
 - `--epsilon-min`: minimum epsilon after annealing (default `0.05`).
 - `--epsilon-duration`: number of steps to anneal epsilon over (default `150000`; `0` keeps epsilon fixed at `--epsilon-max`).
 - `--epsilon-start-step`: steps before epsilon annealing starts (default `0`).
 
-DQN hyperparameters (`--agent dqn` only):
+DQN hyperparameters (`--agent dqn` or `--agent dueling-dqn`):
 
 - `--gamma`: discount factor (default `0.99`).
 - `--lr`: learning rate (default `1e-3`).
@@ -76,9 +77,9 @@ DQN hyperparameters (`--agent dqn` only):
 - `--reward-clip`: symmetric clip on the extrinsic reward before the intrinsic bonus is added (default `1.0`; `<=0` disables).
 - `--grad-clip-norm`: max global gradient norm for clipping (default `10.0`; `<=0` only measures the norm without clipping).
 
-The online network is a two-hidden-layer MLP (width `128`, `agents.defaults.DQN_N_HIDDEN_NODES`) trained with the Huber (SmoothL1) loss. The replay buffer holds transitions in numpy ring buffers and returns sampled minibatches as torch tensors already placed on the agent's device. Learning starts once the buffer holds `agents.defaults.REPLAY_DEFAULT_START_SIZE` (`10000`) transitions.
+The online network is a two-hidden-layer MLP (width `128`, `agents.defaults.DQN_N_HIDDEN_NODES`) trained with the Huber (SmoothL1) loss. `--agent dueling-dqn` swaps that MLP for a dueling architecture and uses Double DQN targets. Both DQN variants normalize observations in `observe()` using the environment's `observation_high` and `angular_dims`, then store the normalized states in replay. The replay buffer holds transitions in numpy ring buffers and returns sampled minibatches as torch tensors already placed on the agent's device. Learning starts once the buffer holds `agents.defaults.REPLAY_DEFAULT_START_SIZE` (`10000`) transitions.
 
-Intrinsic motivation (`--agent dqn` or `--agent a3c`):
+Intrinsic motivation (`--agent dqn`, `--agent dueling-dqn`, or `--agent a3c`):
 
 - `--curiosity {no,grid_count,grid-count}`: intrinsic exploration bonus (default `no`). `grid_count` / `grid-count` adds a count-based bonus (`beta / sqrt(visit_count)`) per discretized cell.
 - `--curiosity-beta`: scale for the curiosity bonus (default `0.1`).
