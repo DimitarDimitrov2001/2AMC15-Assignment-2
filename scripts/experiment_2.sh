@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sensor ablation: 5 seeds × 4 grids × 2 agents × 2 sensor modes = 80 runs (array 0–79).
+# Sensor ablation: 5 seeds × 3 grids × 2 agents × 1 sensor mode = 30 runs (array 0–79).
 
 #SBATCH --job-name=exp2_sensors
 #SBATCH --output=experiment_2_%A_%a.out
@@ -23,9 +23,9 @@ module load Python/3.11.3-GCCcore-12.3.0
 source .venv/bin/activate
 
 SEEDS=(0 1 2 3 4)
-GRIDS=(simple_cave_grid A1_grid big_spaces_cave realistic_super_hard_cave)
+GRIDS=(simple_cave_grid big_spaces_cave realistic_super_hard_cave)
 AGENTS=(dqn ddqn)
-SENSOR_MODES=(sensors no_sensors)
+SENSOR_MODES=(no_sensors)
 
 task_id=$SLURM_ARRAY_TASK_ID
 sensor_idx=$(( task_id % 2 ))
@@ -53,7 +53,7 @@ uv run python train_deep.py \
   --env continuous \
   --grid "grid_configs/${GRID}.npy" \
   --seed "$SEED" \
-  --episodes 10000 \
+  --episodes 5000 \
   --wandb \
   --wandb-group experiment_2 \
   --out-dir "$OUT_DIR" \

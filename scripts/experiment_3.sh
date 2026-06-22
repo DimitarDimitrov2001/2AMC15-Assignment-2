@@ -23,9 +23,9 @@ module load Python/3.11.3-GCCcore-12.3.0
 source .venv/bin/activate
 
 SEEDS=(0 1 2 3 4)
-GRIDS=(simple_cave_grid A1_grid big_spaces_cave realistic_super_hard_cave)
+GRIDS=(simple_cave_grid big_spaces_cave realistic_super_hard_cave)
 AGENTS=(dqn ddqn)
-SIGMAS=(0.0 0.2 0.5)
+SIGMAS=(0.2 0.5)
 
 task_id=$SLURM_ARRAY_TASK_ID
 sigma_idx=$(( task_id % 3 ))
