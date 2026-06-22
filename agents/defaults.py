@@ -6,7 +6,7 @@ DQN_DEFAULT_BATCH_SIZE: int = 64
 DQN_DEFAULT_LEARNING_RATE: float = 1e-3
 DQN_DEFAULT_GAMMA: float = 0.99
 DQN_DEFAULT_NO_OBS_IN_STATE: int = 1
-DQN_DEFAULT_UPDATE_FREQ: int = 1
+DQN_DEFAULT_UPDATE_FREQ: int = 4
 DQN_DEFAULT_TARGET_UPDATE_FREQ: int = 500
 DQN_DEFAULT_CHECKPOINT_PATH: str = "models/dqn/best_model.pt"
 # Symmetric reward clip applied to the extrinsic reward; None disables clipping.

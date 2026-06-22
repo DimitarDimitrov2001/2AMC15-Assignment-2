@@ -70,7 +70,16 @@ class DuelingQNetwork(nn.Module):
         self.advantage_stream = nn.Linear(in_features, n_actions)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
+        """Return Q-values for one state ``(state_dim,)`` or a batch ``(B, state_dim)``."""
+        single_input = states.dim() == 1
+        if single_input:
+            states = states.unsqueeze(0)
+
         features = self.trunk(states)
-        value = self.value_stream(features)              # (B, 1)
-        advantage = self.advantage_stream(features)       # (B, n_actions)
-        return value + (advantage - advantage.mean(dim=1, keepdim=True))
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
+
+        if single_input:
+            return q_values.squeeze(0)
+        return q_values
