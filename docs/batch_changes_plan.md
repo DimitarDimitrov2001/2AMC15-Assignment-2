@@ -237,26 +237,27 @@ per-episode metrics source.
 ### 6.1 Shared settings (all experiments)
 - Partition `gpu_mig`, `--reservation=terv92681`.
 - 5 seeds × 4 grids × 2 agents (`dqn`, `ddqn`).
-- 10000 training episodes each (`--episodes 10000`), `--env continuous`, `--wandb`.
+- 6000 training episodes each (`--episodes 6000`), `--env continuous`,
+  `--device cpu`, `--wandb`.
 - Grids: `simple_cave_grid.npy`, `A1_grid.npy`, `big_spaces_cave.npy`,
   `realistic_super_hard_cave.npy`.
 - Output dirs separated per experiment with self-explanatory run names
   (style mirrors `scripts/simple_cave_grid.sh`):
   - `results/experiment_1/<grid>_<agent>_seed<seed>/`
-  - `results/experiment_2/<grid>_<agent>_<sensors|no_sensors>_seed<seed>/`
+  - `results/experiment_2/<grid>_<agent>_no_sensors_seed<seed>/`
   - `results/experiment_3/<grid>_<agent>_sigma<sigma>_seed<seed>/`
 
-### 6.2 Run counts (matches the requested 240)
+### 6.2 Run counts (matches the requested 120)
 | Experiment | Variants | Runs | Final-eval runs |
 |---|---|---|---|
 | 1 — baseline | 1 (defaults) | 5×4×2×1 = **40** | 1 |
-| 2 — sensors | 2 (sensors / `--no-sensors`) | 5×4×2×2 = **80** | 1 |
-| 3 — stochasticity | 3 (`--sigma` 0.0 / 0.2 / 0.5) | 5×4×2×3 = **120** | 10 |
-| **Total** | | **240** | |
+| 2 — no sensors | 1 (`--no-sensors`) | 5×4×2×1 = **40** | 1 |
+| 3 — stochasticity | 1 (`--sigma 0.5`) | 5×4×2×1 = **40** | 10 |
+| **Total** | | **120** | |
 
 ### 6.3 Script layout (proposed — see §8 Q1)
 - Three array scripts: `scripts/experiment_1.sh` (array `0-39`),
-  `scripts/experiment_2.sh` (`0-79`), `scripts/experiment_3.sh` (`0-119`).
+  `scripts/experiment_2.sh` (`0-39`), `scripts/experiment_3.sh` (`0-39`).
 - Each script builds the full config list (seed × grid × agent × variant) and
   indexes it by `$SLURM_ARRAY_TASK_ID`, mirroring the `CONFIGS=(...)` +
   `read -r ... <<< "${CONFIGS[$SLURM_ARRAY_TASK_ID]}"` pattern in
@@ -266,13 +267,13 @@ per-episode metrics source.
   per-run speed — a single DQN/DDQN run is single-threaded, so extra cores would
   sit idle and just reduce how many MIG tasks pack onto the 36-core node.)
   `--time=08:00:00` (the SLURM wall-clock ceiling per array task) — generous
-  headroom for a 10000-episode run; tasks that finish early release their MIG slice
+  headroom for a 6000-episode run; tasks that finish early release their MIG slice
   immediately, so over-provisioning costs nothing but slightly slower backfill.
   Must stay under the `gpu_mig` partition cap and fit inside the `terv92681`
   reservation window. `.out`/`.err` named per experiment + array id.
 - Each task invokes:
   `uv run python train_deep.py --agent <a> --env continuous --grid <g> --seed <s>
-  --episodes 10000 --wandb --wandb-group experiment_<n> --out-dir <dir>
+  --episodes 6000 --device cpu --wandb --wandb-group experiment_<n> --out-dir <dir>
   [--no-sensors] [--sigma <v>] --final-eval-runs <1|10>`.
 
 ### 6.4 Smoke script
@@ -282,7 +283,7 @@ per-episode metrics source.
   array (a handful of representative configs across the 3 experiments) so it can
   be checked in parallel quickly.
 - Purpose: confirm each experiment's CLI wiring, dirs, and artifact writing run
-  end-to-end before committing the full 240-run matrix.
+  end-to-end before committing the full 120-run matrix.
 
 ---
 
@@ -291,9 +292,9 @@ per-episode metrics source.
 Derived from `results/dueling-dqn_20260622_015311/` (3000 episodes), **excluding**
 the `rollouts/` directory (removed by §4) and `metrics.csv` (removed by §5b).
 
-Per-episode-scaling file at 10000 episodes (×2 vs 5000-ep projection below), plus the two new fields
+Per-episode-scaling file at 6000 episodes, plus the two new fields
 (`rollout/collisions`, `rollout/episode_time_s`):
-- `history.json`: 1.60 MB @ 3000 ep → ~5.8 MB @ 10000 ep (linear in episodes)
+- `history.json`: 1.60 MB @ 3000 ep → ~3.5 MB @ 6000 ep (linear in episodes)
 
 Roughly constant per run:
 - `best.pt` + `last.pt`: 0.31 + 0.31 = 0.62 MB
@@ -304,19 +305,19 @@ Roughly constant per run:
   - 10 runs combined (exp 3): JSON list ~0.17 MB + combined png ~0.06 MB +
     combined html ~0.04 MB ≈ **~0.27 MB**
 
-**Per run (1 final-eval rollout):** ≈ **6.6 MB**
-**Per run (10 final-eval rollouts, exp 3):** ≈ **6.8 MB**
+**Per run (1 final-eval rollout):** ≈ **4.3 MB**
+**Per run (10 final-eval rollouts, exp 3):** ≈ **4.5 MB**
 
 | Experiment | Runs | MB/run | Subtotal |
 |---|---|---|---|
-| 1 | 40 | 6.6 | ~264 MB |
-| 2 | 80 | 6.6 | ~528 MB |
-| 3 | 120 | 6.8 | ~816 MB |
-| **Total** | **240** | | **≈ 1.6 GB** |
+| 1 | 40 | 4.3 | ~172 MB |
+| 2 | 40 | 4.3 | ~172 MB |
+| 3 | 40 | 4.5 | ~180 MB |
+| **Total** | **120** | | **≈ 0.5 GB** |
 
-Plus SLURM `.out`/`.err` logs (~500 log lines/run) ≈ 15–20 MB total.
+Plus SLURM `.out`/`.err` logs (~500 log lines/run) ≈ 8–10 MB total.
 
-**Budget ≈ 1.6–1.7 GB** with filesystem overhead.
+**Budget ≈ 0.5–0.6 GB** with filesystem overhead.
 
 ---
 

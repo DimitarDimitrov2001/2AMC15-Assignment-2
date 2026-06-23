@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sensor ablation: 5 seeds × 4 grids × 2 agents × 2 sensor modes = 80 runs (array 0–79).
+# Sensor ablation: 5 seeds × 4 grids × 2 agents, no sensors only = 40 runs (array 0–39).
 
 #SBATCH --job-name=exp2_sensors
 #SBATCH --output=experiment_2_%A_%a.out
@@ -11,7 +11,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=08:00:00
-#SBATCH --array=0-79
+#SBATCH --array=0-39
 
 set -euo pipefail
 
@@ -25,11 +25,8 @@ source .venv/bin/activate
 SEEDS=(0 1 2 3 4)
 GRIDS=(simple_cave_grid A1_grid big_spaces_cave realistic_super_hard_cave)
 AGENTS=(dqn ddqn)
-SENSOR_MODES=(sensors no_sensors)
 
 task_id=$SLURM_ARRAY_TASK_ID
-sensor_idx=$(( task_id % 2 ))
-task_id=$(( task_id / 2 ))
 agent_idx=$(( task_id % 2 ))
 task_id=$(( task_id / 2 ))
 grid_idx=$(( task_id % 4 ))
@@ -39,23 +36,18 @@ seed_idx=$(( task_id % 5 ))
 SEED=${SEEDS[$seed_idx]}
 GRID=${GRIDS[$grid_idx]}
 AGENT=${AGENTS[$agent_idx]}
-SENSORS=${SENSOR_MODES[$sensor_idx]}
 
-SENSOR_FLAG=""
-if [ "$SENSORS" = "no_sensors" ]; then
-  SENSOR_FLAG="--no-sensors"
-fi
-
-OUT_DIR="results/experiment_2/${GRID}_${AGENT}_${SENSORS}_seed${SEED}"
+OUT_DIR="results/experiment_2/${GRID}_${AGENT}_no_sensors_seed${SEED}"
 
 uv run python train_deep.py \
   --agent "$AGENT" \
   --env continuous \
   --grid "grid_configs/${GRID}.npy" \
   --seed "$SEED" \
-  --episodes 10000 \
+  --episodes 6000 \
+  --device cpu \
   --wandb \
   --wandb-group experiment_2 \
   --out-dir "$OUT_DIR" \
   --final-eval-runs 1 \
-  $SENSOR_FLAG
+  --no-sensors

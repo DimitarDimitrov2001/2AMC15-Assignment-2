@@ -177,6 +177,7 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.matplotlib-cache/
 nosetests.xml
 coverage.xml
 *.cover

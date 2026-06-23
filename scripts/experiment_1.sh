@@ -44,7 +44,8 @@ uv run python train_deep.py \
   --env continuous \
   --grid "grid_configs/${GRID}.npy" \
   --seed "$SEED" \
-  --episodes 10000 \
+  --episodes 6000 \
+  --device cpu \
   --wandb \
   --wandb-group experiment_1 \
   --out-dir "$OUT_DIR" \
