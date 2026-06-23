@@ -181,19 +181,20 @@ cell, `x` increases to the right, and `y` increases downward, matching NumPy
 
 ## SLURM experiment matrix
 
-Three array scripts under `scripts/` launch the 240-run deep-RL matrix on
-`gpu_mig` (reservation `terv92681`): 10000 episodes, `--env continuous`, `--wandb`,
+Three array scripts under `scripts/` launch the 120-run deep-RL matrix on
+`gpu_mig` (reservation `terv92681`): 6000 episodes, `--env continuous`,
+`--device cpu`, `--wandb`,
 seeds `0–4`, grids `simple_cave_grid`, `A1_grid`, `big_spaces_cave`,
 `realistic_super_hard_cave`, agents `dqn` and `ddqn`.
 
 | Script | Array | Runs | Variants | `--final-eval-runs` |
 | --- | --- | --- | --- | --- |
 | `scripts/experiment_1.sh` | `0–39` | 40 | baseline (default sensors, σ=0) | 1 |
-| `scripts/experiment_2.sh` | `0–79` | 80 | `--no-sensors` vs default sensors | 1 |
-| `scripts/experiment_3.sh` | `0–119` | 120 | `--sigma` 0.0 / 0.2 / 0.5 | 10 |
+| `scripts/experiment_2.sh` | `0–39` | 40 | `--no-sensors` only | 1 |
+| `scripts/experiment_3.sh` | `0–39` | 40 | `--sigma 0.5` only | 10 |
 
 Outputs land under `results/experiment_<n>/<grid>_<agent>_…_seed<seed>/`.
-Validate wiring first with `scripts/smoke_experiments.sh` (array `0–5`, 20
+Validate wiring first with `scripts/smoke_experiments.sh` (array `0–2`, 20
 episodes, no W&B).
 
 ```bash
@@ -202,6 +203,37 @@ sbatch scripts/experiment_1.sh
 sbatch scripts/experiment_2.sh
 sbatch scripts/experiment_3.sh
 ```
+
+Create report-ready CSV artifacts from completed experiments with:
+
+```bash
+uv run python scripts/merge_experiments.py
+```
+
+By default this writes `results/training_curves.csv` and
+`results/evaluation_results.csv`. The training-curves CSV aggregates
+per-episode `history.json` metrics by grid, agent, sensor mode, sigma, and
+episode, with means and seed variances for curve plotting. The evaluation CSV
+aggregates numeric `evaluation_summary.txt` metrics by grid, agent, sensor mode,
+and sigma, again reporting means and seed variances. Duplicate run settings are
+deduplicated before aggregation, keeping the lowest experiment number so the
+baseline experiment wins over repeated sensor-enabled runs.
+
+Create final report artifacts from those CSVs with:
+
+```bash
+uv run python scripts/create_final_artifacts.py
+```
+
+By default this writes `results/final_evaluation_table.md` and
+`results/final_learning_curves.png`. The table uses grouped HTML headers inside
+Markdown for the experiment settings, grid difficulties, algorithms, and
+evaluation metrics, and includes average total training collisions computed
+from the histories. The learning-curve figure uses the same grid-by-setting
+layout, with DQN and Dueling DQN shown as separate colors and `+/- 1` seed
+standard deviation bands around 25-episode rolling mean episodic return, cut to
+the first 6000 training episodes. The y-axis is clipped to `[-12, 2]` so the
+post-warmup comparison remains visible despite early low-return exploration.
 
 ## Grids
 

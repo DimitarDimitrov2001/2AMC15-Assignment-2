@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke-test wiring for all three experiment matrices (6 representative configs).
+# Smoke-test wiring for all three experiment matrices (3 representative configs).
 
 #SBATCH --job-name=smoke_experiments
 #SBATCH --output=smoke_experiments_%A_%a.out
@@ -10,7 +10,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=01:00:00
-#SBATCH --array=0-5
+#SBATCH --array=0-2
 
 set -euo pipefail
 
@@ -23,10 +23,7 @@ source .venv/bin/activate
 
 CONFIGS=(
   "experiment_1 baseline simple_cave_grid dqn 0 default 0.0 1"
-  "experiment_2 sensors simple_cave_grid dqn 0 sensors 0.0 1"
   "experiment_2 no_sensors simple_cave_grid ddqn 0 no_sensors 0.0 1"
-  "experiment_3 sigma0 simple_cave_grid dqn 0 default 0.0 1"
-  "experiment_3 sigma02 simple_cave_grid dqn 0 default 0.2 1"
   "experiment_3 sigma05 A1_grid ddqn 1 default 0.5 10"
 )
 
@@ -48,6 +45,7 @@ uv run python train_deep.py \
   --grid "grid_configs/${GRID}.npy" \
   --seed "$SEED" \
   --episodes 20 \
+  --device cpu \
   --eval-interval 5 \
   --out-dir "$OUT_DIR" \
   --final-eval-runs "$FINAL_EVAL_RUNS" \
