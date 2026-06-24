@@ -266,6 +266,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         Implementation of the Amanatides & Woo Fast Voxel Traversal algorithm.
         Returns: (hit_wall: bool, exact_distance: float, exact_hit_position: np.ndarray)
         """
+        max_dist = max(0.0, float(max_dist))
         x, y = start_pos
         current_x, current_y = int(np.floor(x)), int(np.floor(y))
 
@@ -291,6 +292,7 @@ class ContinuousEnvironment(BaseGridEnvironment):
         if self._is_obstacle_cell(current_x, current_y):
             return True, 0.0, start_pos
 
+        tolerance = 1e-9
         dist = 0.0
         while True:
             if t_max_x < t_max_y:
@@ -302,13 +304,18 @@ class ContinuousEnvironment(BaseGridEnvironment):
                 current_y += step_y
                 t_max_y += t_delta_y
 
-            if dist > max_dist:
+            if dist > max_dist + tolerance:
                 final_pos = start_pos + np.array([dx, dy]) * max_dist
                 return False, max_dist, final_pos
 
             if self._is_obstacle_cell(current_x, current_y):
-                exact_hit_pos = start_pos + np.array([dx, dy]) * dist
-                return True, dist, exact_hit_pos
+                hit_dist = min(dist, max_dist)
+                exact_hit_pos = start_pos + np.array([dx, dy]) * hit_dist
+                return True, hit_dist, exact_hit_pos
+
+            if dist > max_dist:
+                final_pos = start_pos + np.array([dx, dy]) * max_dist
+                return False, max_dist, final_pos
 
     def _cast_rays(self) -> np.ndarray:
         """Cast rays and return exact hit distances using Amanatides & Woo DDA."""
@@ -330,9 +337,11 @@ class ContinuousEnvironment(BaseGridEnvironment):
         """Calculate the exact next position using Continuous Collision Detection (CCD)."""
         assert self.pos is not None, "Call reset() first."
         rad = np.deg2rad(self.theta)
-        dx, dy = np.cos(rad), np.sin(rad)
+        direction = 1.0 if step_size >= 0.0 else -1.0
+        dx, dy = np.cos(rad) * direction, np.sin(rad) * direction
+        travel_distance = abs(float(step_size))
 
-        is_hit, dist, target_pos = self._dda_raycast(self.pos, dx, dy, step_size)
+        is_hit, dist, target_pos = self._dda_raycast(self.pos, dx, dy, travel_distance)
 
         if is_hit:
             # Stop slightly short of the wall boundary to avoid numeric rounding
@@ -341,4 +350,15 @@ class ContinuousEnvironment(BaseGridEnvironment):
             safe_dist = max(0.0, dist - epsilon)
             safe_pos = self.pos + np.array([dx, dy]) * safe_dist
             return True, safe_pos
+        if self._is_collision_position(target_pos):
+            return True, self.pos.copy()
         return False, target_pos
+
+    def _is_collision_position(self, pos: np.ndarray) -> bool:
+        """Return True when a continuous position is outside the grid or blocked."""
+        assert self.grid is not None, "Call reset() first."
+        x, y = pos
+        dim_i, dim_j = self.grid.shape
+        if x < 0.0 or y < 0.0 or x >= dim_i or y >= dim_j:
+            return True
+        return self._is_obstacle_cell(*cell_index(pos))
