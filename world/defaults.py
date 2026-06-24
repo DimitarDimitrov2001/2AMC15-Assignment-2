@@ -27,5 +27,5 @@ DEFAULT_RANDOM_SEED: int        = 0
 
 # Default reward values (shared pre-assignment spec).
 GOAL_REWARD: float = 1.0
-LIVING_PENALTY: float = -0.01
-COLLISION_PENALTY: float = -0.2
+LIVING_PENALTY: float = -0.001
+COLLISION_PENALTY: float = -0.01
