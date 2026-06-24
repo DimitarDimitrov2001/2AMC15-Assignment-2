@@ -51,7 +51,6 @@ from agents.defaults import (
     DQN_DEFAULT_GAMMA,
     DQN_DEFAULT_LEARNING_RATE,
     DQN_DEFAULT_BATCH_SIZE,
-    DQN_DEFAULT_REWARD_CLIP,
     DQN_DEFAULT_GRAD_CLIP_NORM,
     EPSILON_SCHEDULER_DEFAULT,
     REPLAY_DEFAULT_CAPACITY,
@@ -78,6 +77,7 @@ from training.defaults import (
     DEFAULT_SEED,
     DEFAULT_EVAL_INTERVAL,
     DEFAULT_EVAL_EPISODES,
+    DEFAULT_FINAL_EVAL_RUNS,
     DEFAULT_LOG_INTERVAL,
     DEFAULT_VIZ_MAX_STEPS,
     DEFAULT_WANDB_VIZ_INTERVAL,
@@ -212,7 +212,6 @@ def _build_dqn_agent(args: Namespace, env: BaseGridEnvironment, device: str, age
         no_obs_in_state=args.stack_size,
         update_freq=args.update_freq,
         target_update_freq=args.target_update_freq,
-        reward_clip=args.reward_clip if args.reward_clip > 0 else None,
         grad_clip_norm=args.grad_clip_norm if args.grad_clip_norm > 0 else None,
         epsilon_scheduler=_build_epsilon_schedule(
             choice=args.epsilon_schedule,
@@ -285,7 +284,7 @@ def parse_args() -> Namespace:
     parser.add_argument("--no-sensors", action="store_false", dest="use_sensors",
                         help="Continuous env only: drop the 8 distance sensors from the "
                              "observation, leaving the bare (x, y, theta) state.")
-    parser.add_argument("--step-size", type=float, default=None, dest="step_size",
+    parser.add_argument("--step-size", type=float, default=0.5, dest="step_size",
                         help="Override the env move/step size (defaults: continuous 0.5, "
                              "minimal 0.5). Larger values mean fewer steps to cross the map, "
                              "so the goal is reachable in a shorter horizon and episodes run faster.")
@@ -322,7 +321,7 @@ def parse_args() -> Namespace:
                         help="Evaluate every N episodes.")
     parser.add_argument("--eval-episodes", type=int, default=DEFAULT_EVAL_EPISODES, dest="eval_episodes",
                         help="Episodes per evaluation.")
-    parser.add_argument("--final-eval-runs", type=int, default=1, dest="final_eval_runs",
+    parser.add_argument("--final-eval-runs", type=int, default=DEFAULT_FINAL_EVAL_RUNS, dest="final_eval_runs",
                         help="Greedy evaluation rollouts from the best checkpoint after training, "
                              "each with a distinct seed (distinct from --eval-episodes).")
     parser.add_argument("--log-interval", type=int, default=DEFAULT_LOG_INTERVAL, dest="log_interval",
@@ -354,8 +353,6 @@ def parse_args() -> Namespace:
                         help="Update online network every N steps.")
     parser.add_argument("--target-update-freq", type=int, default=DQN_DEFAULT_TARGET_UPDATE_FREQ, dest="target_update_freq",
                         help="Update target network every N steps.")
-    parser.add_argument("--reward-clip", type=float, default=(DQN_DEFAULT_REWARD_CLIP or 0.0), dest="reward_clip",
-                        help="Symmetric clip on the extrinsic reward (intrinsic bonus is added after); <=0 disables.")
     parser.add_argument("--grad-clip-norm", type=float, default=(DQN_DEFAULT_GRAD_CLIP_NORM or 0.0), dest="grad_clip_norm",
                         help="Max global gradient norm for clipping; <=0 only measures the norm without clipping.")
 
@@ -400,7 +397,7 @@ def parse_args() -> Namespace:
                              "No local PNG is kept.")
     parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
                         help="Max steps for the visualization rollout.")
-    parser.add_argument("--curiosity", type=str, default="no", dest="curiosity",
+    parser.add_argument("--curiosity", type=str, default="grid_count", dest="curiosity",
                         choices=("no", "grid_count", "grid-count"),
                         help="DQN/Dueling-DQN/A3C only: intrinsic motivation to use. Supports no, grid_count, and grid-count.")
     parser.add_argument("--curiosity-beta", type=float, default=BETA_DEFAULT, dest="curiosity_beta",

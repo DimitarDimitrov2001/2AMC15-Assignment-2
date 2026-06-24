@@ -16,7 +16,6 @@ from agents.defaults import (
     DQN_DEFAULT_GRAD_CLIP_NORM,
     DQN_DEFAULT_LEARNING_RATE,
     DQN_DEFAULT_NO_OBS_IN_STATE,
-    DQN_DEFAULT_REWARD_CLIP,
     DQN_DEFAULT_TARGET_UPDATE_FREQ,
     DQN_DEFAULT_UPDATE_FREQ,
     DQN_N_HIDDEN_NODES,
@@ -50,7 +49,6 @@ class DQNAgent(BaseAgent):
     _angular_periods: np.ndarray
     _obs_buffer: collections.deque[np.ndarray]
     _loss_fn: nn.SmoothL1Loss
-    _reward_clip: float | None
     _grad_clip_norm: float | None
     intrinsic_motivation: IntrinsicMotivation
     _episode_intrinsic_reward: float
@@ -70,7 +68,6 @@ class DQNAgent(BaseAgent):
         update_freq: int = DQN_DEFAULT_UPDATE_FREQ,
         target_update_freq: int = DQN_DEFAULT_TARGET_UPDATE_FREQ,
         checkpoint_path: str = DQN_DEFAULT_CHECKPOINT_PATH,
-        reward_clip: float | None = DQN_DEFAULT_REWARD_CLIP,
         grad_clip_norm: float | None = DQN_DEFAULT_GRAD_CLIP_NORM,
         device: str = "cpu",
     ) -> None:
@@ -81,7 +78,6 @@ class DQNAgent(BaseAgent):
         self.state_dim = self._single_obs_dim * self._no_obs_in_state
         self.gamma = gamma
         self._learning_rate = learning_rate
-        self._reward_clip = reward_clip
         self._grad_clip_norm = grad_clip_norm
         self._device = self._resolve_device(device)
         torch.manual_seed(seed)
@@ -209,8 +205,6 @@ class DQNAgent(BaseAgent):
         self._obs_buffer.append(transition.next_state)
         phi_tp1 = self._get_phi()
         extrinsic = transition.reward
-        if self._reward_clip is not None and self._reward_clip > 0:
-            extrinsic = float(np.clip(extrinsic, -self._reward_clip, self._reward_clip))
         bonus = self.intrinsic_motivation.get_bonus_and_update(transition.next_state)
         reward = extrinsic + bonus
         self._episode_intrinsic_reward += bonus
