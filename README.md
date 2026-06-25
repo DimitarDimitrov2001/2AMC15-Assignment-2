@@ -270,9 +270,12 @@ Weights & Biases.
 
 The actual report experiments are the three numbered SLURM scripts:
 
-- `scripts/experiment_1.sh`: baseline with sensors and deterministic actions.
+- `scripts/experiment_1.sh`: baseline hyperparameters with sensors and deterministic actions.
 - `scripts/experiment_2.sh`: no-sensor ablation with `--no-sensors`.
 - `scripts/experiment_3.sh`: stochastic-action setting with `--sigma 0.5`.
+
+Note that each experiment is applied on each implemented agent (DQN, DDQN) + on
+the 3 created cave grids.
 
 The other shell scripts were mainly used for smoke tests and wiring checks.
 The numbered experiment scripts were launched on Snellius with SLURM to compute
