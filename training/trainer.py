@@ -77,11 +77,6 @@ class Trainer:
         # W&B only if its enabled in the config
         self._setup_wandb()
 
-        # Agents that own their training loop (e.g. A3C) drive their own
-        # environments; the Trainer only consumes their per-episode reports.
-        if getattr(self.agent, "trains_externally", False):
-            return self._train_external()
-
         start_time = time.perf_counter()
 
         # Loop over training episodes (First episode is 1)
@@ -207,47 +202,6 @@ class Trainer:
 
         # Some entry points generate and log post-training artifacts after
         # train() returns, so they keep the run open and finish it themselves.
-        if self.config.finish_wandb_on_train_end:
-            self._finish_wandb()
-        return self.history
-
-    def _train_external(self) -> list[dict[str, float]]:
-        """Consume episode reports from a self-training agent (e.g. A3C).
-
-        The agent's ``train_iter`` generator owns the parallel environment
-        rollouts and yields one metrics dict per finished episode. The Trainer
-        retains ownership of evaluation, logging, checkpointing and W&B, all run
-        on the agent's shared global network on the main process.
-        """
-        start_time = time.perf_counter()
-
-        for episode, report in enumerate(self.agent.train_iter(), start=1):
-            self.global_step = int(report.get("global_step", self.global_step))
-
-            episode_metrics: dict[str, float] = dict(report)
-            episode_metrics["episode"] = float(episode)
-            episode_metrics["global_step"] = float(self.global_step)
-            episode_metrics["charts/SPS"] = float(
-                self.global_step / max(time.perf_counter() - start_time, 1e-9)
-            )
-
-            # Evaluate the shared global policy on a cadence (no learning here).
-            if episode % self.config.eval_interval == 0:
-                eval_metrics = self.evaluate()
-                episode_metrics.update(eval_metrics)
-                self._maybe_save_best(eval_metrics)
-
-            self.history.append(episode_metrics)
-
-            if episode % self.config.log_interval == 0:
-                self._log(episode_metrics, episode)
-
-            self._maybe_log_rollout(episode)
-
-        self._maybe_save_last()
-        if self.config.history_path is not None:
-            self.save_history(self.config.history_path)
-
         if self.config.finish_wandb_on_train_end:
             self._finish_wandb()
         return self.history
@@ -430,21 +384,9 @@ class Trainer:
         reward = self._window_mean(window, "rollout/episode_reward")
         length = self._window_mean(window, "rollout/episode_length")
         term_rate = self._window_mean(window, "rollout/success")
-        # Fall back to the policy loss for agents without a TD loss (e.g. A3C).
         loss = self._window_mean(window, "losses/td_loss")
-        if not np.isfinite(loss):
-            loss = self._window_mean(window, "losses/policy_loss")
         q_value = self._window_mean(window, "qvals/q_taken")
-        if not np.isfinite(q_value):
-            q_value = self._window_mean(window, "qvals/state_value")
-        if not np.isfinite(q_value):
-            q_value = self._window_mean(window, "qvals/returns")
-        # DQN reports epsilon; A3C reports explicit random-action probability
-        # plus entropy. Prefer the action probability for terminal readability.
-        exploration = metrics.get(
-            "charts/epsilon",
-            metrics.get("charts/random_action_prob", metrics.get("charts/entropy", float("nan"))),
-        )
+        exploration = metrics.get("charts/epsilon", float("nan"))
 
         log_parts = [
             f"Episode {episode:5d}",

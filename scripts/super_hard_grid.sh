@@ -44,4 +44,4 @@ source .venv/bin/activate
 
 # 4. Run the training script
 
-python train_deep.py --agent a3c --env continuous --grid grid_configs/A1_grid.npy --wandb --log-interval 10 --episodes 10000  --device cuda --max-steps 1000
+python train_deep.py --agent dqn --env continuous --grid grid_configs/A1_grid.npy --wandb --log-interval 10 --episodes 10000 --device cuda --max-steps 1000

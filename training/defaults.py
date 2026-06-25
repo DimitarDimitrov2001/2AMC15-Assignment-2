@@ -2,8 +2,8 @@
 
 # Training loop defaults
 DEFAULT_ENV_NAME: str = "continuous"
-DEFAULT_GRID_FILENAME: str = "A1_grid.npy"
-DEFAULT_TOTAL_EPISODES: int = 5_000
+DEFAULT_GRID_FILENAME: str = "realistic_super_hard_cave.npy"
+DEFAULT_TOTAL_EPISODES: int = 6_000
 DEFAULT_MAX_STEPS_PER_EPISODE: int = 500
 DEFAULT_SEED: int = 0
 

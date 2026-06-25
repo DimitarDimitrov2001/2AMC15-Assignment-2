@@ -1,8 +1,7 @@
-"""Experience replay buffer for off-policy deep RL agents.
+"""Replay buffer used by the DQN-style agents.
 
-The buffer is a reusable component owned by the agent (e.g. DQN), not the
-Trainer. It stores transitions in preallocated numpy ring buffers and samples
-uniform random minibatches as torch tensors placed on the configured device.
+Transitions are kept in fixed-size numpy arrays, then sampled back as torch
+tensors on the agent's device.
 """
 
 from __future__ import annotations
@@ -17,24 +16,21 @@ from agents.defaults import REPLAY_DEFAULT_CAPACITY, REPLAY_DEFAULT_START_SIZE
 
 @dataclass(frozen=True)
 class Batch:
-    """A sampled minibatch of transitions as device-placed torch tensors."""
+    """One replay minibatch, onverted to torch tensors."""
 
-    states: torch.Tensor       # (batch, obs_dim) float32
-    actions: torch.Tensor      # (batch,) int64
-    rewards: torch.Tensor      # (batch,) float32
-    next_states: torch.Tensor  # (batch, obs_dim) float32
-    dones: torch.Tensor        # (batch,) float32
+    states: torch.Tensor
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    next_states: torch.Tensor
+    dones: torch.Tensor
 
 
 class ReplayBuffer:
-    """Fixed-capacity uniform experience replay buffer.
+    """Uniform replay buffer with a fixed capacity.
 
-    Transitions are stored in preallocated numpy arrays that are overwritten
-    in a ring once capacity is reached, so memory usage is bounded and adds
-    are O(1).
+    Once the buffer is full, new transitions overwrite the oldest ones.
     """
 
-    # Private fields declared with types up front.
     _capacity: int
     _replay_start_size: int
     _obs_dim: int
@@ -56,15 +52,7 @@ class ReplayBuffer:
         seed: int | None = None,
         device: torch.device | str = "cpu",
     ) -> None:
-        """Create an empty buffer.
-
-        Args:
-            obs_dim: Length of the (flat) state vector.
-            capacity: Maximum number of transitions retained.
-            replay_start_size: Minimum fill before sampling is allowed.
-            seed: Optional seed for reproducible sampling.
-            device: Device that sampled tensors are placed on.
-        """
+        """Allocate storage for up to ``capacity`` transitions."""
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
 
@@ -94,7 +82,7 @@ class ReplayBuffer:
         next_state: np.ndarray,
         done: bool,
     ) -> None:
-        """Store a single transition, overwriting the oldest when full."""
+        """Add one transition and advance the ring-buffer pointer."""
         state_arr = np.asarray(state, dtype=np.float32)
         next_state_arr = np.asarray(next_state, dtype=np.float32)
         if state_arr.shape != (self._obs_dim,):
@@ -115,7 +103,7 @@ class ReplayBuffer:
         self._size = min(self._size + 1, self._capacity)
 
     def add_transition(self, transition: Transition) -> None:
-        """Store a :class:`Transition`. ``terminated`` is treated as ``done``."""
+        """Convenience wrapper for the BaseAgent transition object."""
         self.add(
             state=transition.state,
             action=transition.action,
@@ -125,17 +113,7 @@ class ReplayBuffer:
         )
 
     def sample(self, batch_size: int) -> Batch:
-        """Sample a uniform random minibatch without replacement.
-
-        Args:
-            batch_size: Number of transitions to draw.
-
-        Returns:
-            A :class:`Batch` of torch tensors placed on the buffer's device.
-
-        Raises:
-            ValueError: If fewer than ``batch_size`` transitions are stored.
-        """
+        """Draw a minibatch once the warmup threshold has been reached."""
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if not self.can_sample(batch_size):
@@ -155,7 +133,7 @@ class ReplayBuffer:
         )
 
     def can_sample(self, batch_size: int) -> bool:
-        """True if the buffer holds at least ``replay_start_size`` transitions or batch size if batch size > replay start size."""
+        """Return whether the buffer is warm enough for a training batch."""
         if batch_size > self._replay_start_size:
             return self._size >= batch_size
         else:

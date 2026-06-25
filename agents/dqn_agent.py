@@ -26,7 +26,7 @@ from world import BaseGridEnvironment
 
 
 class DQNAgent(BaseAgent):
-    """DQN agent with env-driven preprocessing and replay."""
+    """Baseline DQN implementation"""
 
     _rng: np.random.Generator
     n_actions: int
@@ -85,6 +85,9 @@ class DQNAgent(BaseAgent):
             torch.cuda.manual_seed_all(seed)
         elif self._device.type == "mps" and hasattr(torch, "mps"):
             torch.mps.manual_seed(seed)
+
+        # Keep feature scales predictable for the MLP. Angle dimensions are
+        # wrapped in _preprocess before this scale is applied.
         obs_high = np.asarray(env.observation_high, dtype=np.float32)
         obs_high = np.where(obs_high == 0.0, 1.0, obs_high)
         single_obs_scale = (1.0 / obs_high).astype(np.float32)
@@ -108,6 +111,8 @@ class DQNAgent(BaseAgent):
         self._angular_periods = np.tile(self._angular_periods, self._no_obs_in_state)
         self._update_network = self._build_q_network().to(self._device)
         self._target_network = self._build_q_network().to(self._device)
+        # The target network starts as a copy and is only refreshed every
+        # _target_update_freq learning steps.
         self._target_network.load_state_dict(self._update_network.state_dict())
         self._target_network.eval()
         self._optimizer = torch.optim.Adam(self._update_network.parameters(), learning_rate)
@@ -181,6 +186,8 @@ class DQNAgent(BaseAgent):
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
         """Pick an action greedily from the online net, exploring while training."""
         if len(self._obs_buffer) == 0:
+            # At episode start there is no history yet, so repeat the first
+            # observation to fill the stack.
             for _ in range(self._no_obs_in_state):
                 self._obs_buffer.append(state)
         elif not training:
@@ -201,9 +208,12 @@ class DQNAgent(BaseAgent):
 
     def observe(self, transition: Transition) -> None:
         """Store one trainer transition with normalized states in replay memory."""
+        # Replay stores the stacked state before and after the environment step.
         phi_t = self._get_phi()
         self._obs_buffer.append(transition.next_state)
         phi_tp1 = self._get_phi()
+
+        # Curiosity, when enabled, is added on top of the environment reward.
         extrinsic = transition.reward
         bonus = self.intrinsic_motivation.get_bonus_and_update(transition.next_state)
         reward = extrinsic + bonus
@@ -221,6 +231,7 @@ class DQNAgent(BaseAgent):
 
     def update(self) -> dict[str, float]:
         """Run one DQN gradient step and return training diagnostics."""
+        # Learning is delayed by both the update frequency and replay warmup.
         if self._total_steps % self._update_freq != 0:
             return {}
         if not self.replay_buffer.can_sample(self.batch_size):
@@ -232,6 +243,7 @@ class DQNAgent(BaseAgent):
         q_pred = q_all.gather(1, actions).squeeze(1)
 
         with torch.no_grad():
+            # Standard DQN target
             q_next = self._target_network(batch.next_states).max(dim=1).values
             targets = batch.rewards + self.gamma * q_next * (1.0 - batch.dones)
 
@@ -295,3 +307,4 @@ class DQNAgent(BaseAgent):
         self._update_network.load_state_dict(checkpoint["update_network"])
         self._target_network.load_state_dict(checkpoint["target_network"])
         self._optimizer.load_state_dict(checkpoint["optimizer"])
+        

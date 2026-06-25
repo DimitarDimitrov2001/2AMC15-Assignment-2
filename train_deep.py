@@ -1,27 +1,19 @@
-"""Deep-RL training CLI.
+"""Command-line script for deep RL training.
 
-Entry point for the new continuous/minimal environments and the algorithm-
-agnostic Trainer. Learning agents (DQN, Dueling-DQN, A3C, ...) plug in via
-the agent factory without touching this script.
-
-Usage:
-    uv run python train_deep.py --env minimal
-    uv run python train_deep.py --env continuous --grid grid_configs/small_grid.npy
+This file wires together the environment, agent, Trainer, and final artifacts.
+The actual learning code lives in ``agents/`` and ``training/``.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
-import functools
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 import re
 import tempfile
 from typing import Any
 
-# Force a headless backend before pyplot is imported (via visualize_random_agent),
-# so periodic in-training rendering never tries to open a GUI window.
 import matplotlib
 import numpy as np
 
@@ -37,11 +29,8 @@ from agents import RandomAgent
 from agents.base_agent import BaseAgent
 from agents.dqn_agent import DQNAgent
 from agents.ddqn_agent import DuelingDQNAgent
-from agents.a3c_agent import A3CAgent
 from agents.epsilon_schedules import ConstantEpsilon, EpsilonSchedule, ExponentialEpsilonDecay, LinearEpsilonAnnealing
 from agents.defaults import (
-    A3C_DEFAULT_TOTAL_STEPS,
-    A3C_LEARNING_RATE,
     CURIOSITY_RESOLUTION_DEFAULT,
     EPSILON_DEFAULT_DECAY,
     EPSILON_DEFAULT_MAX,
@@ -57,14 +46,6 @@ from agents.defaults import (
     DQN_DEFAULT_NO_OBS_IN_STATE,
     DQN_DEFAULT_UPDATE_FREQ,
     DQN_DEFAULT_TARGET_UPDATE_FREQ,
-    A3C_N_WORKERS,
-    A3C_PROGRESS_REWARD_SCALE,
-    A3C_RANDOM_ACTION_DECAY_STEPS,
-    A3C_RANDOM_ACTION_FINAL,
-    A3C_RANDOM_ACTION_START,
-    A3C_T_MAX,
-    A3C_ENTROPY_BETA,
-    A3C_VALUE_COEF,
     BETA_DEFAULT,
 )
 from training import Trainer, TrainerConfig
@@ -95,14 +76,16 @@ def _build_reward_fn(
         living_penalty: float,
         collision_penalty: float
     ) -> RewardFn:
+    """Create the reward function."""
     def reward_fn(
         grid: np.ndarray,
         pos: np.ndarray,
         new_pos: np.ndarray,
         collision: bool,
     ) -> float:
-        """Return the default step reward.
-        """
+        """Return the reward for one environment step."""
+        # A blocked move is treated as a collision even if the robot stays near
+        # another special cell.
         if collision:
             return collision_penalty
         i, j = cell_index(new_pos)
@@ -121,12 +104,11 @@ def _build_env(
     reward_fn: RewardFn | None = None,
     sigma: float = 0.0,
 ) -> BaseGridEnvironment:
-    """Construct the requested environment with sensible defaults.
+    """Build the selected grid environment.
 
-    ``use_sensors`` only affects the continuous environment (toggles the
-    distance-sensor readings in the observation); it is ignored otherwise.
-    ``step_size`` overrides the env's default move size when provided.
-    ``sigma`` sets continuous-env action noise std-dev; ignored for minimal.
+    Only the continuous environment uses sensors and action noise. The minimal
+    environment gets the same reward function and optional start position (not suggested to 
+    use minimal environment as we fully ran our experiments with the continuous environment).
     """
     # Only override the env's own default step size when explicitly requested.
     step_kwargs = {"step_size": step_size} if step_size is not None else {}
@@ -158,7 +140,7 @@ def _build_epsilon_schedule(
         epsilon_min: float,
         decay: float
     ) -> EpsilonSchedule:
-    """Resolves epsilon schedule method and returns the scheduler"""
+    """Select and the epsilon schedule for exploration."""
     if choice == "linear_annealing":
         return LinearEpsilonAnnealing(
             duration=epsilon_duration,
@@ -188,8 +170,8 @@ def _resolve_device(choice: str) -> str:
 
 
 def _build_intrinsic_motivation(args: Namespace, env: BaseGridEnvironment) -> NoMotivation | GridCountMotivation:
-    """Return the curiosity module selected on the CLI."""
-    if args.curiosity == "grid_count":
+    """Build the optional intrinsic reward implementation."""
+    if args.curiosity == "grid-count":
         return GridCountMotivation(
             max_x=env.observation_high[0],
             max_y=env.observation_high[1],
@@ -200,7 +182,7 @@ def _build_intrinsic_motivation(args: Namespace, env: BaseGridEnvironment) -> No
 
 
 def _build_dqn_agent(args: Namespace, env: BaseGridEnvironment, device: str, agent_cls: type[DQNAgent]) -> DQNAgent:
-    """Construct a DQN-family agent with shared deep-RL hyperparameters."""
+    """Build DQN or DDQN; both share the same CLI hyperparameters."""
     return agent_cls(
         env=env,
         seed=args.seed,
@@ -226,49 +208,11 @@ def _build_dqn_agent(args: Namespace, env: BaseGridEnvironment, device: str, age
 
 
 def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> BaseAgent:
-    """Construct the requested agent.
-
-    A registry keyed by ``--agent`` so learning agents drop in later without
-    changing the training flow.
-    """
+    """Pick the agent implementation requested on the command line."""
     builders = {
         "random": lambda: RandomAgent(num_actions=env.n_actions, seed=args.seed),
         "dqn": lambda: _build_dqn_agent(args, env, device, DQNAgent),
-        "dueling-dqn": lambda: _build_dqn_agent(args, env, device, DuelingDQNAgent),
         "ddqn": lambda: _build_dqn_agent(args, env, device, DuelingDQNAgent),
-        "a3c": lambda: A3CAgent(
-            env=env,
-            # Picklable factory (module-level fn + primitive args) so each worker
-            # builds its own env under the spawn start method.
-            env_fn=functools.partial(
-                _build_env,
-                args.env,
-                args.grid,
-                start_pos=(None if args.exploring_starts
-                           else (tuple(args.start_pos) if args.start_pos is not None else 
-                                 (tuple(env.agent_start_pos) if env.agent_start_pos is not None else None))),
-                use_sensors=args.use_sensors,
-                step_size=args.step_size,
-                sigma=args.sigma,
-            ),
-            seed=args.seed,
-            total_steps=(args.a3c_total_steps if args.a3c_total_steps is not None
-                         else args.episodes * args.max_steps),
-            max_steps_per_episode=args.max_steps,
-            n_workers=args.a3c_workers,
-            t_max=args.a3c_t_max,
-            gamma=args.gamma,
-            learning_rate=args.a3c_lr,
-            entropy_beta=args.a3c_entropy_beta,
-            value_coef=args.a3c_value_coef,
-            random_action_start=args.a3c_random_action_start,
-            random_action_final=args.a3c_random_action_final,
-            random_action_decay_steps=args.a3c_random_action_decay_steps,
-            progress_reward_scale=args.a3c_progress_reward_scale,
-            curiosity_beta=(args.curiosity_beta if args.curiosity == "grid_count" else 0.0),
-            curiosity_resolution=CURIOSITY_RESOLUTION_DEFAULT,
-            device=device,
-        ),
     }
     if args.agent not in builders:
         raise ValueError(f"Unknown agent: {args.agent}")
@@ -276,7 +220,7 @@ def _build_agent(args: Namespace, env: BaseGridEnvironment, device: str) -> Base
 
 
 def parse_args() -> Namespace:
-    """Parse the deep-RL training CLI arguments."""
+    """Parse command-line arguments."""
     parser = ArgumentParser(description="Deep-RL training entry point.")
 
     parser.add_argument("--env", choices=("minimal", "continuous"), default=DEFAULT_ENV_NAME,
@@ -293,9 +237,9 @@ def parse_args() -> Namespace:
                              "0 keeps actions deterministic.")
     parser.add_argument(
         "--agent",
-        choices=("random", "dqn", "dueling-dqn", "ddqn", "a3c"),
+        choices=("random", "dqn", "ddqn"),
         default="dqn",
-        help="Agent to train (`ddqn` is an alias for `dueling-dqn`).",
+        help="Agent to train. `ddqn` uses the dueling network with Double DQN targets.",
     )
     parser.add_argument("--grid", type=Path, default=GRID_CONFIGS_FP / DEFAULT_GRID_FILENAME,
                         help="Path to a .npy grid file.")
@@ -356,31 +300,6 @@ def parse_args() -> Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=(DQN_DEFAULT_GRAD_CLIP_NORM or 0.0), dest="grad_clip_norm",
                         help="Max global gradient norm for clipping; <=0 only measures the norm without clipping.")
 
-    parser.add_argument("--a3c-workers", type=int, default=A3C_N_WORKERS, dest="a3c_workers",
-                        help="A3C only: number of asynchronous actor-learner processes.")
-    parser.add_argument("--a3c-lr", type=float, default=A3C_LEARNING_RATE, dest="a3c_lr",
-                        help="A3C only: optimizer learning rate.")
-    parser.add_argument("--a3c-t-max", type=int, default=A3C_T_MAX, dest="a3c_t_max",
-                        help="A3C only: max rollout length between gradient pushes.")
-    parser.add_argument("--a3c-entropy-beta", type=float, default=A3C_ENTROPY_BETA, dest="a3c_entropy_beta",
-                        help="A3C only: entropy regularization coefficient (uniform across workers).")
-    parser.add_argument("--a3c-random-action-start", type=float, default=A3C_RANDOM_ACTION_START,
-                        dest="a3c_random_action_start",
-                        help="A3C only: initial probability of forcing a uniform-random action.")
-    parser.add_argument("--a3c-random-action-final", type=float, default=A3C_RANDOM_ACTION_FINAL,
-                        dest="a3c_random_action_final",
-                        help="A3C only: final random-action probability after decay.")
-    parser.add_argument("--a3c-random-action-decay-steps", type=int, default=A3C_RANDOM_ACTION_DECAY_STEPS,
-                        dest="a3c_random_action_decay_steps",
-                        help="A3C only: env steps over which random-action probability decays.")
-    parser.add_argument("--a3c-progress-reward-scale", type=float, default=A3C_PROGRESS_REWARD_SCALE,
-                        dest="a3c_progress_reward_scale",
-                        help="A3C only: training-only reward for reducing distance to the target; <=0 disables.")
-    parser.add_argument("--a3c-value-coef", type=float, default=A3C_VALUE_COEF, dest="a3c_value_coef",
-                        help="A3C only: weight on the value loss.")
-    parser.add_argument("--a3c-total-steps", type=int, default=A3C_DEFAULT_TOTAL_STEPS, dest="a3c_total_steps",
-                        help="A3C only: global env-step budget (defaults to episodes * max-steps).")
-
     parser.add_argument("--out-dir", type=Path, default=None, dest="out_dir",
                         help="Output dir for checkpoints and history JSON "
                              f"(default: {DEFAULT_OUTPUT_ROOT}/<agent>_<timestamp>).")
@@ -397,9 +316,9 @@ def parse_args() -> Namespace:
                              "No local PNG is kept.")
     parser.add_argument("--viz-max-steps", type=int, default=DEFAULT_VIZ_MAX_STEPS, dest="viz_max_steps",
                         help="Max steps for the visualization rollout.")
-    parser.add_argument("--curiosity", type=str, default="grid_count", dest="curiosity",
-                        choices=("no", "grid_count", "grid-count"),
-                        help="DQN/Dueling-DQN/A3C only: intrinsic motivation to use. Supports no, grid_count, and grid-count.")
+    parser.add_argument("--curiosity", type=str, default="grid-count", dest="curiosity",
+                        choices=("no", "grid-count"),
+                        help="DQN/DDQN only: intrinsic motivation to use. Supports no motivation and grid-count.")
     parser.add_argument("--curiosity-beta", type=float, default=BETA_DEFAULT, dest="curiosity_beta",
                         help="Beta value for the curiosity term.")
     parser.add_argument("--target-reward", type=float, default=GOAL_REWARD, dest="target_reward",
@@ -409,7 +328,6 @@ def parse_args() -> Namespace:
     parser.add_argument("--collision-penalty", type=float, default=COLLISION_PENALTY, dest="collision_penalty",
                         help="Penalty for colliding with a wall or obstacle.")
     args = parser.parse_args()
-    args.curiosity = args.curiosity.replace("-", "_")
     return args
 
 
@@ -445,7 +363,7 @@ def _build_config(args: Namespace) -> TrainerConfig:
 
 
 def _default_out_dir(agent: str) -> Path:
-    """Return the default timestamped directory for run artifacts."""
+    """Create the default timestamped results directory name if none is provided."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Path(DEFAULT_OUTPUT_ROOT) / f"{agent}_{timestamp}"
 
@@ -492,7 +410,7 @@ def _step_env_for_rollout(
 
 
 def _json_safe_info(info: dict[str, Any]) -> dict[str, Any]:
-    """Convert environment info values into JSON-safe objects."""
+    """Convert numpy values in the info dict before writing JSON."""
     safe: dict[str, Any] = {}
     for key, value in info.items():
         if isinstance(value, np.ndarray):
@@ -569,7 +487,7 @@ def _run_policy_rollout(
 
 
 def _best_checkpoint_path(config: TrainerConfig) -> Path | None:
-    """Return the checkpoint path to use for final rollout rendering."""
+    """Prefer the best checkpoint, falling back to the last one."""
     if config.checkpoint_dir is None:
         return None
     checkpoint_dir = Path(config.checkpoint_dir)
@@ -588,22 +506,20 @@ def _wandb_artifact_name(name: str) -> str:
 
 
 def main() -> None:
-    """Build env + agent + Trainer, train, and optionally visualize."""
+    """Run the full training job from parsed CLI arguments."""
     args = parse_args()
     if args.out_dir is None:
         args.out_dir = _default_out_dir(args.agent)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     device = _resolve_device(args.device)
-    if args.agent == "a3c" and device != "cpu":
-        # A3C shares the network across processes via CPU shared memory.
-        print(f"[a3c] forcing device=cpu (was {device}) for shared-memory multiprocessing")
-        device = "cpu"
+    
     base_start = tuple(args.start_pos) if args.start_pos is not None else None
-    # --eval-starting-pos overrides the eval/viz start independently of training.
     eval_start = tuple(args.eval_start_pos) if args.eval_start_pos is not None else base_start
     train_start = None if args.exploring_starts else base_start
     reward_fn = _build_reward_fn(args.target_reward, args.living_penalty, args.collision_penalty)
+
+    # Use separate env instances so evaluation resets do not disturb training.
     env = _build_env(
         args.env,
         args.grid,
@@ -633,6 +549,8 @@ def main() -> None:
 
     viz_fn = None
     if args.wandb and not args.no_visualize and args.wandb_viz_interval > 0:
+        # The trainer calls this hook on eval intervals. It renders a temporary
+        # PNG and W&B takes ownership of logging it.
         viz_env = _build_env(
             args.env,
             args.grid,
@@ -691,6 +609,8 @@ def main() -> None:
             print(f"loaded checkpoint for final rollout -> {checkpoint_path}")
             rollouts = []
             for run_idx in range(args.final_eval_runs):
+                # Offset final-eval seeds so they do not overlap training/eval
+                # seeds from the main Trainer loop.
                 rollout_seed = args.seed + 20_000 + run_idx
                 rollouts.append(
                     _run_policy_rollout(
@@ -733,10 +653,12 @@ def main() -> None:
                 artifact_type="training-run",
                 paths=artifact_paths,
                 aliases=["latest", "best-policy"],
-            )
+        )
 
         if rollouts is not None:
-            print(f"saved rollout html -> {args.out_dir / 'policy_rollout.html'}")
+            rollout_json = args.out_dir / "policy_rollout.json"
+            rollout_png = args.out_dir / "policy_rollout.png"
+            print(f"saved rollout artifacts -> {rollout_json}, {rollout_png}")
             if args.wandb:
                 import wandb
 

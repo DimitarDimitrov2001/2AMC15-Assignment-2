@@ -25,11 +25,6 @@ class Transition:
 class BaseAgent(ABC):
     # Base interface for all agents. Trainer only knows this interface
 
-    # When True, the agent owns its training loop (e.g. A3C's multi-process
-    # actor-learners) and the Trainer delegates to ``train_iter`` instead of the
-    # single-environment select/observe/update loop.
-    trains_externally: bool = False
-
     @abstractmethod
     def select_action(self, state: np.ndarray, training: bool = True) -> int:
         # Choose one discrete action

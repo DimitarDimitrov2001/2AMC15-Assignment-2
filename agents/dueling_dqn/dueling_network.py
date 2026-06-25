@@ -7,35 +7,11 @@ from torch import nn
 
 
 class DuelingQNetwork(nn.Module):
-    """
-    Dueling architecture (Wang et al., 2016).
+    """Dueling Q-network with a shared MLP trunk and separate value/action heads.
 
-    Shares the ENTIRE hidden trunk (matching plain QNetwork's depth exactly),
-    then splits only at the final projection into:
-      - value_stream:      features -> scalar V(s)
-      - advantage_stream:  features -> one A(s, a) per action
-
-    Recombined as:
-        Q(s, a) = V(s) + ( A(s, a) - mean_a' A(s, a') )
-
-    The mean-subtraction is what makes V and A separately identifiable --
-    without it, Q = V + A has infinitely many (V, A) decompositions that
-    produce the same Q, so the two streams would carry no individual meaning.
-
-    Design note: an earlier version held back the *last* hidden layer from
-    the shared trunk and gave each stream its own extra hidden layer. That
-    weakened the shared feature extractor (one fewer shared layer than
-    QNetwork) and doubled the from-scratch parameters each stream had to
-    learn, which let the advantage head collapse toward a near
-    state-independent ordering -- i.e. the greedy policy picked roughly the
-    same action everywhere, even though V(s) converged fine. Sharing the
-    full trunk and keeping the heads to a single linear layer each avoids
-    that: both streams reuse the same well-trained features QNetwork would
-    have used for its single output layer.
-
-    Same constructor signature and input/output shapes as a plain QNetwork
-    (state_dim in, n_actions out) -- this is intentional so it can be used
-    anywhere a QNetwork is expected.
+    The network returns Q-values using the standard aggregation
+    ``Q(s, a) = V(s) + A(s, a) - mean_a A(s, a)``. Subtracting the mean keeps
+    the split between the value and advantage streams well-defined.
     """
 
     def __init__(
@@ -55,7 +31,7 @@ class DuelingQNetwork(nn.Module):
         if any(size <= 0 for size in hidden_sizes):
             raise ValueError("hidden_sizes must contain positive integers")
 
-        # Shared trunk: ALL hidden layers, same depth as QNetwork.
+        # Shared feature extractor.
         trunk_layers: list[nn.Module] = []
         in_features = state_dim
         for hidden_size in hidden_sizes:
@@ -64,8 +40,7 @@ class DuelingQNetwork(nn.Module):
             in_features = int(hidden_size)
         self.trunk = nn.Sequential(*trunk_layers)
 
-        # Thin heads: a single linear layer each, splitting only at the
-        # very last projection -- matches the paper's split point.
+        # Separate value and advantage projections.
         self.value_stream = nn.Linear(in_features, 1)
         self.advantage_stream = nn.Linear(in_features, n_actions)
 

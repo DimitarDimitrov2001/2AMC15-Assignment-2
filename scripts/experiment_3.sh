@@ -1,17 +1,15 @@
 #!/bin/bash
-# Stochasticity sweep: 5 seeds × 4 grids × 2 agents, sigma 0.5 only = 40 runs (array 0–39).
+# Stochasticity sweep: 5 seeds × 3 grids × 2 agents, sigma 0.5 only = 30 runs (array 0–29).
 
 #SBATCH --job-name=exp3_sigma
 #SBATCH --output=experiment_3_%A_%a.out
 #SBATCH --error=experiment_3_%A_%a.err
-#SBATCH --partition=gpu_mig
-#SBATCH --reservation=terv92681
 #SBATCH --gpus-per-node=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=08:00:00
-#SBATCH --array=0-39
+#SBATCH --array=0-29
 
 set -euo pipefail
 
@@ -30,8 +28,8 @@ SIGMA=0.5
 task_id=$SLURM_ARRAY_TASK_ID
 agent_idx=$(( task_id % 2 ))
 task_id=$(( task_id / 2 ))
-grid_idx=$(( task_id % 4 ))
-task_id=$(( task_id / 4 ))
+grid_idx=$(( task_id % 3 ))
+task_id=$(( task_id / 3 ))
 seed_idx=$(( task_id % 5 ))
 
 SEED=${SEEDS[$seed_idx]}
